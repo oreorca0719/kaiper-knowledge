@@ -225,7 +225,8 @@ def build_main_graph(checkpointer=None):
     g.add_conditional_edges(
         "router", route_by_decision,
         {
-            "rejected": "rejected",
+            # "rejected" 없음 — 라우터는 범위 밖 판정을 하지 않는다.
+            # 보안 차단은 security_gate 가, 자료 없음은 generator 가 담당한다.
             "no_retrieval_answer": "no_retrieval_answer",
             "ai_guide": "ai_guide",
             "file_chat": "file_chat",

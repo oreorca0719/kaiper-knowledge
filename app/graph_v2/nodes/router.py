@@ -7,7 +7,6 @@ Router (Planner) node — 질문 분류 + 검색 도구 선택 (FR-101, FR-102, 
   - "multi_hop_retrieval": sub-question 분해 후 다단계
   - "ai_guide": 시스템 안내 요청
   - "file_chat": file_context 있을 때
-  - "rejected": 명백히 범위 밖
 
 추가 (Lever 5 학습 통합):
   - question_type: exact_phrase / numerical / list_n / fill_blank / reasoning / comparison
@@ -137,7 +136,27 @@ def router_node(state: GraphState) -> dict:
         decision = "single_retrieval"
 
     # ─── 알려지지 않은 decision은 single로 ───
-    valid = {"no_retrieval", "single_retrieval", "multi_hop_retrieval", "ai_guide", "file_chat", "rejected"}
+    #
+    # 【"rejected" 를 라우터에서 제거한 이유】
+    #
+    # 라우터 프롬프트는 rejected 를 선택지로 제시하지 않는데도, 예전 valid 집합은
+    # 이를 받아들였다. LLM 은 프롬프트에 없는 값을 만들어낼 수 있고 실제로 그랬다:
+    #
+    #   질의 "그래픽카드 요구사항이 어떻게 되나요?"
+    #     -> router:rejected  (1.2초, 검색 0회)
+    #     -> "해당 질문은 사내 AI 어시스턴트의 지원 범위에 포함되지 않습니다"
+    #   같은 질문이 다른 실행에서는 GPU 요구사항 표로 정확히 답했다 (15.4초).
+    #   비결정적이며, 문서에 답이 있는데도 거절했다.
+    #
+    # 근본 문제는 **라우터가 지식베이스의 내용을 모른다**는 점이다. 색인된 문서를
+    # 본 적이 없는 노드가 검색 전에 "범위 밖"을 판정하는 것은 추측이다.
+    # 이 코퍼스처럼 도메인 어휘(GPU/VRAM/크레딧)가 일반 용어와 겹치면 반드시
+    # 오판한다.
+    #
+    # 범위 판정은 검색 **후** 근거를 보고 한다. 관련 chunk 가 없으면 generator 가
+    # "관련 사내 문서를 찾을 수 없습니다" 로 답한다 — 같은 거절이지만 증거 기반이다.
+    # 보안 차단(프롬프트 인젝션)은 security_gate 가 패턴으로 판정하므로 그대로 둔다.
+    valid = {"no_retrieval", "single_retrieval", "multi_hop_retrieval", "ai_guide", "file_chat"}
     if decision not in valid:
         decision = "single_retrieval"
 
@@ -156,9 +175,12 @@ def router_node(state: GraphState) -> dict:
 
 
 def route_by_decision(state: GraphState) -> str:
+    """라우터 결정 -> 다음 노드.
+
+    "rejected" 분기는 없다. 라우터는 범위 밖 판정을 하지 않는다 (위 주석 참조).
+    범위 밖 거절은 security_gate(보안) 또는 generator(검색 결과 없음)가 담당한다.
+    """
     d = state.routing_decision
-    if d == "rejected":
-        return "rejected"
     if d == "no_retrieval":
         return "no_retrieval_answer"
     if d == "ai_guide":
