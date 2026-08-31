@@ -222,6 +222,7 @@ aarch64 wheel 확인. 동급 x86(`t3.medium`) 대비 **20.6% 저렴**.
 
 | 레이어 | 위치 | 상태 |
 |---|---|---|
+| **0차** | `login` (가입 게이트) | **미등록 이메일 자동 가입 차단** |
 | 1차 | `security_gate` (그래프 첫 노드) | **fail-closed** |
 | 2차 | `router` → `rejected` | 동작 |
 | 3차 | `retrieve_node` (chunk sanitize) | **복구됨** (v1→v2 전환 시 누락돼 있었음) |
