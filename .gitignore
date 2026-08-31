@@ -1,0 +1,47 @@
+# 환경변수 (민감 정보)
+.env
+
+# 벡터 DB (재배포 시 자동 재구성)
+chroma_db/
+
+# 로컬 지식 베이스 (운영 전환 시 삭제 예정)
+knowledge_data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# 로그
+server.log
+uvicorn.log
+
+# 테스트 결과
+test_result.json
+
+# 평가 실행 산출물 (재실행 시 재생성)
+eval/results/
+eval/data/sources/
+
+# 평가 분석 시 derive 되는 ID 목록
+eval/data/correct_ids.txt
+eval/data/failure_ids.txt
+
+# AWS CLI 일시 작업 디렉토리 (IAM policy 임시 파일 등)
+_aws_tmp/
+
+# Claude Code 설정
+.claude/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

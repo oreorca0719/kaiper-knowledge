@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>승인 대기 | Kaiper AI</title>
+  <link rel="stylesheet" as="style" crossorigin
+        href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@500,600,700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <style>
+    .pending-shell {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 120px 24px;
+    }
+    .pending-meta {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: center;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+    .pending-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 600px) {
+      .pending-shell { padding: 60px 16px; }
+      .pending-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body class="page-auth">
+  <div class="pending-shell">
+    <p class="overline" style="text-align: center; margin-bottom: 16px;">Account Status</p>
+    <h1 class="display-3" style="text-align: center; margin-bottom: 16px;">승인 대기 중입니다</h1>
+    <p style="text-align: center; color: var(--text-2); margin-bottom: 48px; font-size: 16px;">
+      담당 관리자의 승인 후 서비스 이용이 가능합니다.<br>
+      잠시만 기다려 주시기 바랍니다.
+    </p>
+
+    <div class="card" style="padding: 32px;">
+      {% if user %}
+      <div class="pending-meta">
+        <div>
+          <p class="overline" style="margin-bottom: 6px;">계정</p>
+          <div style="font-weight: 500; font-size: 15px;">{{ user.email }}</div>
+        </div>
+        <span class="chip warning">
+          <span class="badge-dot"></span>
+          PENDING
+        </span>
+      </div>
+      {% endif %}
+
+      <div class="pending-grid">
+        <div>
+          <p class="overline" style="margin-bottom: 6px;">예상 처리</p>
+          <div style="font-weight: 500;">영업일 기준 1일 이내</div>
+        </div>
+        <div>
+          <p class="overline" style="margin-bottom: 6px;">문의</p>
+          <div style="font-weight: 500;">담당 관리자</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin-top: 32px;">
+      <a href="/logout" class="admin-btn">로그아웃</a>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>관리자 콘솔 | Kaiper AI</title>
+  <link rel="stylesheet" as="style" crossorigin
+        href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@500,600,700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <style>
+    .admin-shell { max-width: 1280px; margin: 0 auto; padding: 0 24px 80px; }
+    .admin-hero { padding-top: 60px; padding-bottom: 32px; }
+
+    .menu-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 768px) {
+      .menu-grid { grid-template-columns: 1fr; }
+    }
+
+    .menu-card {
+      padding: 32px;
+      text-decoration: none;
+      color: inherit;
+      cursor: pointer;
+    }
+    .menu-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+    .menu-icon-shape {
+      width: 48px; height: 48px;
+      border-radius: 8px;
+      background: var(--primary-tint);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    .menu-card h3 {
+      font-family: var(--font-display);
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .menu-card p {
+      font-size: 13px;
+      color: var(--text-2);
+      line-height: 1.6;
+    }
+
+    .list {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .list-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .list-row:last-child { border-bottom: none; }
+  </style>
+</head>
+<body>
+  <!-- Top nav -->
+  <nav class="topbar">
+    <a href="/admin" class="brand">
+      <span class="brand-dot admin"></span>
+      <span>Kaiper AI · Admin</span>
+    </a>
+    <div class="topbar-actions">
+      <span class="chip success" style="margin-right: 8px;">
+        <span class="badge-dot"></span>
+        시스템 정상
+      </span>
+      <a href="/" class="admin-btn">메인</a>
+      <a href="/logout" class="logout-btn">로그아웃</a>
+    </div>
+  </nav>
+
+  <main class="admin-shell">
+    <!-- Hero -->
+    <section class="admin-hero">
+      <p class="overline" style="margin-bottom: 16px;">Administration</p>
+      <h1 class="display-2" style="margin-bottom: 12px;">관리자 콘솔</h1>
+      <p style="color: var(--text-2); font-size: 16px;">
+        {{ user.email }}
+      </p>
+    </section>
+
+    <!-- Action Grid -->
+    <section style="padding-top: 16px; padding-bottom: 40px;">
+      <h2 class="display-3" style="font-size: 24px; margin-bottom: 20px;">작업</h2>
+      <div class="menu-grid">
+
+        <a href="/admin/users" class="card card-hover menu-card">
+          <div class="menu-card-header">
+            <div class="menu-icon-shape">👤</div>
+            <span style="font-size: 18px; color: var(--text-2);">→</span>
+          </div>
+          <h3>사용자 관리</h3>
+          <p>가입 승인, 관리자 권한 부여, 계정 삭제</p>
+        </a>
+
+        <div class="card card-hover menu-card" id="reingest-card" onclick="runReingest()">
+          <div class="menu-card-header">
+            <div class="menu-icon-shape">🔄</div>
+            <span class="chip success" style="font-size: 10px; padding: 2px 8px;">자동</span>
+          </div>
+          <h3>문서 정보 최신화</h3>
+          <p id="reingest-desc">S3 동기화 후 변경된 문서를 벡터 DB에 반영합니다</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- System Status -->
+    <section style="padding-top: 16px;">
+      <h2 class="display-3" style="font-size: 24px; margin-bottom: 20px;">시스템</h2>
+      <div class="list">
+        <div class="list-row">
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <span class="badge-dot" style="color: var(--success); width: 8px; height: 8px;"></span>
+            <div>
+              <div style="font-weight: 500;">LLM 모델</div>
+              <div class="text-mono" style="font-size: 12px;">gemini-3-flash-preview</div>
+            </div>
+          </div>
+          <span class="chip success">Active</span>
+        </div>
+        <div class="list-row">
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <span class="badge-dot" style="color: var(--success); width: 8px; height: 8px;"></span>
+            <div>
+              <div style="font-weight: 500;">Vector Store</div>
+              <div class="text-mono" style="font-size: 12px;">ChromaDB · my_knowledge</div>
+            </div>
+          </div>
+          <span class="chip success">Healthy</span>
+        </div>
+        <div class="list-row">
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <span class="badge-dot" style="color: var(--success); width: 8px; height: 8px;"></span>
+            <div>
+              <div style="font-weight: 500;">Reranker</div>
+              <div class="text-mono" style="font-size: 12px;">BAAI/bge-reranker-v2-m3</div>
+            </div>
+          </div>
+          <span class="chip success">Loaded</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    async function runReingest() {
+      const card = document.getElementById('reingest-card');
+      const desc = document.getElementById('reingest-desc');
+      card.style.pointerEvents = 'none';
+      card.style.opacity = '0.6';
+      desc.textContent = '실행 중...';
+      try {
+        const res = await fetch('/admin/api/reingest', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+          desc.textContent = '완료. 서버 로그에서 결과를 확인하세요.';
+          card.style.borderColor = 'var(--success)';
+        } else {
+          desc.textContent = '오류: ' + (data.error || '알 수 없는 오류');
+          card.style.borderColor = 'var(--error)';
+        }
+      } catch (e) {
+        desc.textContent = '요청 실패: ' + e.message;
+        card.style.borderColor = 'var(--error)';
+      } finally {
+        card.style.opacity = '1';
+        card.style.pointerEvents = 'auto';
+      }
+    }
+  </script>
+</body>
+</html>

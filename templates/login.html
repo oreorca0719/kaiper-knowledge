@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>로그인 | Kaiper AI</title>
+  <link rel="stylesheet" as="style" crossorigin
+        href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@500,600,700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <style>
+    body.page-auth { min-height: 100vh; }
+    .auth-grid {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      min-height: 100vh;
+    }
+    .auth-hero {
+      padding: 80px 60px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border-right: 1px solid var(--border);
+    }
+    .auth-form-side {
+      padding: 80px 60px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .auth-tagline {
+      font-size: 17px;
+      color: var(--text-2);
+      max-width: 460px;
+      line-height: 1.65;
+    }
+    .auth-footer {
+      margin-top: 32px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      color: var(--text-2);
+    }
+    @media (max-width: 768px) {
+      .auth-grid { grid-template-columns: 1fr; }
+      .auth-hero { padding: 40px 24px; border-right: none; border-bottom: 1px solid var(--border); }
+      .auth-form-side { padding: 40px 24px; }
+    }
+  </style>
+</head>
+<body class="page-auth">
+  <div class="auth-grid">
+    <!-- LEFT: Editorial hero -->
+    <section class="auth-hero dot-grid">
+      <a href="/" class="brand">
+        <span class="brand-dot"></span>
+        <span>Kaiper AI</span>
+      </a>
+
+      <div>
+        <p class="overline" style="margin-bottom: 24px;">사내 AI 어시스턴트</p>
+        <h1 class="display-2" style="margin-bottom: 28px;">
+          업무의 모든 영역을<br>
+          <span style="color: var(--primary);">하나의 AI</span>로.
+        </h1>
+        <p class="auth-tagline">
+          사내 정책·매뉴얼 검색부터 RFP 초안 작성, 파일 분석까지.
+          신뢰할 수 있는 출처와 함께 답변합니다.
+        </p>
+      </div>
+
+      <div style="display:flex; align-items:center; gap: 20px;">
+        <span class="text-mono" style="font-size:12px;">v2.1 · Pro Solution</span>
+        <span class="chip outline">
+          <span class="badge-dot" style="color: var(--success);"></span>
+          서비스 정상
+        </span>
+      </div>
+    </section>
+
+    <!-- RIGHT: Login form -->
+    <section class="auth-form-side">
+      <p class="overline" style="margin-bottom: 14px;">로그인</p>
+      <h2 class="display-3" style="margin-bottom: 12px;">시작하기</h2>
+      <p class="text-small" style="margin-bottom: 32px;">
+        최초 로그인 시 계정이 생성되며, 관리자 승인 후 이용할 수 있습니다.
+      </p>
+
+      {% if error %}
+        <div class="alert error">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="/login" class="form-stack">
+        <div>
+          <label class="field-label" for="email">이메일</label>
+          <input id="email" name="email" type="email" required style="margin-top: 6px;" placeholder="user@prosolution.com" />
+        </div>
+        <div>
+          <label class="field-label" for="password">비밀번호</label>
+          <input id="password" name="password" type="password" required style="margin-top: 6px;" placeholder="••••••••" />
+        </div>
+        <div>
+          <label class="field-label" for="name">이름 <span style="color: var(--text-2); font-weight: 400;">(선택)</span></label>
+          <input id="name" name="name" type="text" style="margin-top: 6px;" placeholder="홍길동" />
+        </div>
+        <button type="submit" class="primary-btn btn-lg" style="justify-content: center; margin-top: 8px;">계속 →</button>
+      </form>
+
+      <div class="auth-footer">
+        <span>도움이 필요하신가요?</span>
+        <span style="color: var(--primary); font-weight: 500;">관리자 문의</span>
+      </div>
+    </section>
+  </div>
+</body>
+</html>
