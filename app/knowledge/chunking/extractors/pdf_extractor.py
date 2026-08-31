@@ -51,7 +51,18 @@ def _guess_title(page_text: str) -> str:
 
 
 # 섹션 패턴 (예: "1. 교육 대상", "PART 02", "3-1 후속 액션")
-_SECTION_RE = re.compile(r"^(?:PART\s*\d+|\d+\.\s*\S+|\d+-\d+\s+\S+)", re.MULTILINE)
+#
+# 【주의】 번호+마침표는 슬라이드 본문의 열거에서도 흔하다.
+#   실측 오탐: "1.중앙화된 AI 접근 지점 -GitLab 인스턴스와 AI 모델 사이의..."
+#     -> section_path 가 '1.중앙화된' 으로 잡히고, 이후 페이지들에 계속 상속돼
+#        분할 조각의 맥락 헤더가 '1.중앙화된 / 지원 가능한 모델들 – ...' 로 오염됐다.
+#
+# 마침표 뒤에 공백이 있는 형태만 섹션 헤더로 인정하고(열거는 보통 붙여 씀),
+# 뒤에 오는 제목이 지나치게 길면 본문으로 본다.
+_SECTION_RE = re.compile(
+    r"^(?:PART\s*\d+|\d{1,2}\.\s+\S[^\n]{0,28}|\d+-\d+\s+\S[^\n]{0,28})$",
+    re.MULTILINE,
+)
 
 
 def extract_pdf(path: Path) -> list[PageUnit]:

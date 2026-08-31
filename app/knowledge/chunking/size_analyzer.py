@@ -73,18 +73,76 @@ def _with_header(fragment: str, header: str) -> str:
     return f"{header}\n\n{fragment}"
 
 
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+
+
+def _is_markdown_table(block: str) -> bool:
+    """마크다운 표 블록인가 (2행 이상이 파이프 행)."""
+    lines = [ln for ln in block.splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return False
+    return sum(1 for ln in lines if _TABLE_ROW_RE.match(ln)) >= len(lines) * 0.8
+
+
+def _split_markdown_table(block: str, max_size: int) -> list[str]:
+    """마크다운 표를 **행 경계**에서 자르고 헤더 행을 각 조각에 반복한다.
+
+    【이유】
+    글자 수로 자르면 표가 행 중간에서 끊긴다. 실측:
+        chunk#118 ... '| GPT | GPT-'      (여기서 끊김)
+        chunk#119 'y |  | GPT | GPT-oss-120B | ...'
+    끊긴 조각은 어느 열이 무엇인지 알 수 없어 검색으로도, 답변 근거로도
+    쓸 수 없다. 표는 정보 밀도가 가장 높은 부분이라 손실이 크다.
+
+    헤더 행(제목행 + 구분행)을 조각마다 반복해 각 조각이 독립적으로
+    해석 가능하게 만든다.
+    """
+    lines = [ln for ln in block.splitlines() if ln.strip()]
+    # 헤더 = 첫 파이프 행 + 그 다음 구분 행(|---|)
+    head: list[str] = []
+    body_start = 0
+    for i, ln in enumerate(lines[:3]):
+        if _TABLE_ROW_RE.match(ln):
+            head.append(ln)
+            body_start = i + 1
+            if len(head) == 2:
+                break
+        else:
+            head.append(ln)          # 표 앞 설명 줄
+            body_start = i + 1
+    head_text = "\n".join(head)
+    head_len = len(head_text) + 1
+
+    out: list[str] = []
+    cur: list[str] = []
+    cur_len = head_len
+    for ln in lines[body_start:]:
+        add = len(ln) + 1
+        if cur and cur_len + add > max_size:
+            out.append(head_text + "\n" + "\n".join(cur))
+            cur, cur_len = [], head_len
+        cur.append(ln)
+        cur_len += add
+    if cur:
+        out.append(head_text + "\n" + "\n".join(cur))
+    return out or [block]
+
+
 def _split_text(text: str, max_size: int, overlap: int = 50) -> list[str]:
-    """단락 경계 우선 분할. 단락이 더 크면 슬라이딩 윈도우."""
+    """단락 경계 우선 분할. 마크다운 표는 행 경계로 자르고 헤더를 반복한다."""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks: list[str] = []
     current: list[str] = []
     current_len = 0
     for para in paragraphs:
         if len(para) > max_size:
-            # 큰 단락 — 슬라이딩 윈도우
             if current:
                 chunks.append("\n\n".join(current))
                 current, current_len = [], 0
+            if _is_markdown_table(para):
+                chunks.extend(_split_markdown_table(para, max_size))
+                continue
+            # 큰 단락 — 슬라이딩 윈도우
             step = max(max_size - overlap, 1)
             for i in range(0, len(para), step):
                 chunks.append(para[i: i + max_size])
