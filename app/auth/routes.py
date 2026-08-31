@@ -84,6 +84,24 @@ def login_page(request: Request):
     return _render(request, "login.html", {"error": None})
 
 
+def _signup_allowed(email: str) -> bool:
+    """미등록 이메일의 자동 가입 허용 여부.
+
+    `SIGNUP_ALLOWED_DOMAINS` 에 콤마로 구분한 도메인을 나열하면 그 도메인만
+    가입할 수 있다. 비어 있으면(기본) 자동 가입을 전면 차단하고, 관리자가
+    미리 만든 계정만 로그인할 수 있다.
+
+        SIGNUP_ALLOWED_DOMAINS=            -> 자동 가입 없음 (기본, 가장 안전)
+        SIGNUP_ALLOWED_DOMAINS=pron.co.kr  -> 해당 도메인만 가입 가능
+    """
+    raw = (os.getenv("SIGNUP_ALLOWED_DOMAINS") or "").strip()
+    if not raw:
+        return False
+    allowed = {d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()}
+    domain = email.rsplit("@", 1)[-1].lower()
+    return domain in allowed
+
+
 @router.post("/login")
 @_limiter.limit(os.getenv("LOGIN_RATE_LIMIT", "10/minute"))
 def login_action(
@@ -103,6 +121,21 @@ def login_action(
     user = get_user_by_email(email_l)
 
     if user is None:
+        # 미등록 이메일 — 가입 허용 여부를 정책으로 판정한다.
+        #
+        # 【이 게이트가 필요한 이유】
+        # 이전에는 무조건 계정을 생성했다. 승인 대기 상태이긴 하지만,
+        # 엔드포인트에 접근할 수 있는 누구나 계정을 무한히 만들 수 있다.
+        # 지금은 보안그룹이 단일 IP 로 막고 있을 뿐 애플리케이션 자체에는
+        # 가입 통제가 없었고, 동료에게 공유하려고 IP 를 넓히는 순간 열린다.
+        #
+        # SIGNUP_ALLOWED_DOMAINS 로 사내 도메인만 허용한다.
+        # 비워 두면 가입이 완전히 차단된다 (관리자가 미리 생성한 계정만 로그인).
+        if not _signup_allowed(email_l):
+            print(f"[AUTH] 미등록 이메일 가입 차단: {email_l}")
+            return _render(request, "login.html", {
+                "error": "등록되지 않은 계정입니다. 관리자에게 계정 생성을 요청해 주세요."
+            })
         pw_hash = hash_password(password)
         user = create_user_if_not_exists(email_l, name or "", pw_hash)
     else:
