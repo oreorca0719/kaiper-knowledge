@@ -66,10 +66,26 @@ _RRF_K = int(os.getenv("RRF_K", "10"))
 
 
 # 같은 페이지 형제 chunk 동반 회수 방식. expand_with_same_page 주석 참조.
-#   inline  부모 바로 뒤 삽입 (기본)
+#   off     가져오지 않음 (기본). Chroma 조회 생략.
 #   append  뒤에 붙임 — FINAL_K 컷에서 전부 잘려 사실상 무동작이던 기존 동작
-#   off     가져오지 않음 (Chroma 조회 생략)
-_CO_RETRIEVAL_MODE = (os.getenv("CO_RETRIEVAL_MODE", "inline") or "inline").strip().lower()
+#   inline  부모 바로 뒤 삽입 — 의도대로 작동시킨 버전
+#
+# 【기본값을 off 로 정한 근거 — 실측, 120문항 답변 정확도】
+#     CO=append (기존)   전체 90.0%   direct 91.9%   gap 87.0%
+#     CO=off             전체 89.2%   direct 89.2%   gap 89.1%
+#     CO=inline (수정)   전체 88.3%   direct 90.5%   gap 84.8%
+#
+# inline 은 형제를 부모 뒤에 끼워 넣어 "본문과 표를 함께 보기" 를 의도대로
+# 작동시킨 버전인데, 오히려 정확도가 떨어졌다. 더 잘 맞는 문서를 컨텍스트에서
+# 밀어내기 때문이다. 청킹 단계에서 이미 맥락 헤더(_context_header)와 표 행 단위
+# 분할을 적용해 chunk 가 자체 완결적이므로, 형제를 끌어오는 이득이 없다.
+#
+# off 와 append 는 통계적으로 동률이다 (n=120 에서 1문항 = 0.83%p). 다만 append
+# 는 가져온 형제가 FINAL_K 컷에서 전부 잘리는 것이 증명된 동작이면서 페이지당
+# Chroma 조회 2회는 계속 발생시킨다. 같은 정확도라면 조회를 생략하는 쪽이 맞다.
+#
+# 청킹 방식이 달라져 chunk 가 자체 완결적이지 않게 되면 inline 을 재검토할 것.
+_CO_RETRIEVAL_MODE = (os.getenv("CO_RETRIEVAL_MODE", "off") or "off").strip().lower()
 
 
 class ChromaHybridRetriever:
