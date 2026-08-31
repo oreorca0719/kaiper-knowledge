@@ -139,40 +139,60 @@ def _rejected_node(state: GraphState) -> dict:
 # 단, reflection 자체는 유지 (verification 결과를 답변 메타로 활용 가능).
 # generator → reflection → END 경로는 항상 일관됨.
 
+def _changed(before, after) -> bool:
+    """두 값이 실질적으로 다른가. 비교 불가 타입은 '바뀜'으로 본다(안전 측)."""
+    if before is after:
+        return False
+    try:
+        return bool(before != after)
+    except Exception:
+        return True
+
+
 def _subgraph_node(sub):
-    """서브그래프를 노드로 감싸며 `decision_path` 의 **증분만** 반환하게 한다.
+    """서브그래프를 노드로 감싸며 **실제로 바뀐 채널만** 반환하게 한다.
 
-    문제:
-      `retrieve` / `generate` 서브그래프는 부모와 같은 `GraphState` 스키마를
-      공유한다. 따라서 부모의 누적 리스트를 그대로 물려받아 자기 항목을 붙인 뒤
-      **전체를 반환**하고, 부모의 `Annotated[list[str], add]` reducer 가 그걸 다시
-      이어붙인다. 결과적으로 앞부분이 중복된다:
+    두 가지 문제를 함께 막는다.
 
-        부모      : [security, router, qa_lookup]
-        서브반환 : [security, router, qa_lookup, query_plan, retrieve, grade]
-        병합 후 : [security, router, qa_lookup] + [security, router, qa_lookup, ...]
-                    └────── 중복 ──────┘
+    (1) decision_path 중복
+        서브그래프는 부모와 같은 GraphState 스키마를 공유하므로 부모의
+        누적 리스트를 물려받아 자기 항목을 붙인 뒤 **전체**를 반환한다.
+        부모의 reducer 가 그걸 다시 이어붙여 앞부분이 중복된다.
+        → 진입 시점 길이 이후의 증분만 잘라 넘긴다.
 
-      서브그래프 두 개를 지나며 동일 항목이 최대 4회 기록된다.
-      기능에는 영향이 없으나(분기 판정은 서브그래프 진입 전에 끝난다),
-      평가 결과·routing 로그의 경로 진단이 왜곡된다. 에이전트 판단 경로를
-      감사해야 하는 환경에서는 그것만으로도 치명적이다.
+    (2) 상위 노드 재실행  ← 이것이 더 심각했다
+        전체 상태를 반환하면 서브그래프가 건드리지도 않은 채널
+        (input_data / routing_decision / question_type ...)까지 "갱신됨"으로
+        표시된다. LangGraph 는 채널 버전으로 노드 실행을 결정하므로
+        security_gate / router 같은 상위 노드가 다시 트리거된다.
 
-    수정:
-      진입 시점의 길이를 기억해 두고, 반환 직전에 그 지점 이후만 잘라 넘긴다.
+        이 현상은 체크포인터 구현에 따라 갈렸다 (실측, 검색 경로 1턴):
+            InMemorySaver         →  8개  (정상)
+            DynamoDBCheckpointer  → 18개  (security_gate 2회, router 4회)
+        자체 구현 체크포인터는 thread 당 단일 슬롯에 checkpoint_id 를
+        항상 "latest" 로 두기 때문에 버전 체인이 달라진다.
+        → 바뀜 채널만 반환해 불필요한 버전 증가 자체를 없앨다.
 
-    `messages` 는 건들지 않는다. `add_messages` reducer 가 메시지 id 기준으로
-    중복을 제거하므로 같은 문제가 발생하지 않는다.
+    messages 는 add_messages 가 id 로 중복을 제거하므로 별도 처리하지 않는다.
     """
     def _node(state: GraphState) -> dict:
-        before = len(state.decision_path or [])
+        before_len = len(state.decision_path or [])
         out = sub.invoke(state)
-        if isinstance(out, dict) and "decision_path" in out:
-            out = dict(out)
-            out["decision_path"] = (out.get("decision_path") or [])[before:]
-        return out
+        if not isinstance(out, dict):
+            return out
 
-    _node.__name__ = getattr(sub, "name", None) or "subgraph_node"
+        result: dict = {}
+        for key, value in out.items():
+            if key == "decision_path":
+                delta = (value or [])[before_len:]
+                if delta:
+                    result[key] = delta
+                continue
+            if _changed(getattr(state, key, None), value):
+                result[key] = value
+        return result
+
+    _node.__name__ = "subgraph_node"
     return _node
 
 
