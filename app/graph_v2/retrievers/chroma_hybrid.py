@@ -65,6 +65,13 @@ _HYBRID_FETCH_MULTIPLIER = 4
 _RRF_K = int(os.getenv("RRF_K", "10"))
 
 
+# 같은 페이지 형제 chunk 동반 회수 방식. expand_with_same_page 주석 참조.
+#   inline  부모 바로 뒤 삽입 (기본)
+#   append  뒤에 붙임 — FINAL_K 컷에서 전부 잘려 사실상 무동작이던 기존 동작
+#   off     가져오지 않음 (Chroma 조회 생략)
+_CO_RETRIEVAL_MODE = (os.getenv("CO_RETRIEVAL_MODE", "inline") or "inline").strip().lower()
+
+
 class ChromaHybridRetriever:
     """Chroma 시맨틱 + BM25 RRF hybrid retriever.
 
@@ -274,60 +281,96 @@ class ChromaHybridRetriever:
     # ────────────────────────────────────────────────────────
 
     def expand_with_same_page(self, retrieved: list[Document]) -> list[Document]:
-        """Retrieve된 chunks의 (doc_id, page_unit_index)와 같은 모든 chunks를 추가 fetch.
+        """같은 페이지의 형제 chunk 를 함께 가져온다 (본문이 걸리면 그 페이지의 표도).
 
-        예: chunk_19a (본문)이 retrieve되면 → chunk_19b (표)도 함께.
-        같은 페이지의 본문·표를 함께 보면 retrieval 정밀도 + 답변 컨텍스트 풍부.
+        【이 함수가 프로덕션에서 무동작이던 경위 — 실측】
+        이전 구현은 형제 chunk 를 결과 리스트 **맨 뒤에 append** 하고 고정 score 0.5
+        를 부여했다. 그런데 retrieve_node 의 호출 순서는 이렇다:
+
+            pool -> 상위 CANDIDATE_TOP_K(20)개
+                 -> expand_with_same_page  (뒤에 append, 예: 35개가 됨)
+                 -> boost_by_query_context (인자 없이 호출돼 즉시 return, 무동작)
+                 -> docs[:RETRIEVAL_FINAL_K]  (=20)
+
+        CANDIDATE_TOP_K 와 FINAL_K 가 모두 20 이므로 **append 된 형제는 전부 잘렸다**.
+        의도했던 "본문과 표를 함께 보기" 는 한 번도 작동하지 않았고, 그러면서
+        페이지당 Chroma 조회 2회는 계속 발생해 지연만 늘었다.
+
+        【수정 방식】
+        형제를 **부모 바로 뒤에 끼워 넣는다**. 그래야 상위권 문서의 표가 하위권
+        문서를 밀어내고 컨텍스트에 들어간다. score 는 고정값 대신 부모 점수에
+        0.9 를 곱해 물려받는다 — 형제의 가치는 부모의 관련성에 종속되므로
+        모든 형제에게 같은 0.5 를 주면 상위권 부모의 표와 하위권 부모의 표가
+        구분되지 않는다.
+
+        모드는 환경변수로 전환한다 (기본 inline):
+            inline  부모 뒤 삽입 (수정된 동작)
+            append  기존 동작 (뒤에 붙임 — 사실상 무동작)
+            off     형제를 가져오지 않음 (Chroma 조회 생략, 가장 빠름)
         """
-        if not retrieved:
+        mode = _CO_RETRIEVAL_MODE
+        if mode == "off" or not retrieved:
             return retrieved
 
-        # 이미 가진 chunks의 (doc_id, page) 키 집합
-        page_keys: set[tuple[str, int]] = set()
         existing_contents = {d.content for d in retrieved}
+        page_keys: set[tuple[str, int]] = set()
         for d in retrieved:
             doc_id = d.metadata.get("doc_id")
             page = d.metadata.get("page_unit_index")
             parent = d.metadata.get("parent_page_index")
             if doc_id and page is not None:
                 page_keys.add((doc_id, page))
-            # 표면 본문 페이지도 함께 fetch
             if doc_id and parent is not None:
                 page_keys.add((doc_id, parent))
-
         if not page_keys:
             return retrieved
 
-        # ChromaDB에서 같은 page_keys의 모든 chunks fetch
-        expanded = list(retrieved)
+        # (doc_id, page) -> 형제 Document 목록
+        siblings: dict[tuple[str, int], list[LCDocument]] = {}
         try:
             collection = self._get_chroma()._collection
-            # ChromaDB get은 단일 where만 — page_keys별로 반복
             for doc_id, page in page_keys:
-                # 1) page_unit_index가 page인 chunks
-                res = collection.get(
-                    where={"$and": [{"doc_id": doc_id}, {"page_unit_index": page}]},
-                    include=["documents", "metadatas"],
-                )
-                # 2) parent_page_index가 page인 chunks (같은 페이지의 표)
-                res2 = collection.get(
-                    where={"$and": [{"doc_id": doc_id}, {"parent_page_index": page}]},
-                    include=["documents", "metadatas"],
-                )
-                for r in (res, res2):
-                    docs_t = r.get("documents") or []
-                    metas = r.get("metadatas") or []
-                    for txt, meta in zip(docs_t, metas):
+                found: list[LCDocument] = []
+                for where in (
+                    {"$and": [{"doc_id": doc_id}, {"page_unit_index": page}]},
+                    {"$and": [{"doc_id": doc_id}, {"parent_page_index": page}]},
+                ):
+                    res = collection.get(where=where, include=["documents", "metadatas"])
+                    for txt, meta in zip(res.get("documents") or [], res.get("metadatas") or []):
                         if txt and txt not in existing_contents:
-                            existing_contents.add(txt)
-                            expanded.append(self._to_document(
-                                LCDocument(page_content=txt, metadata=meta or {}),
-                                score=0.5,  # co-retrieval은 중간 score 부여
-                            ))
+                            found.append(LCDocument(page_content=txt, metadata=meta or {}))
+                if found:
+                    siblings[(doc_id, page)] = found
         except Exception as e:
             print(f"[CO_RETRIEVAL] failed (non-fatal): {e}")
+            return retrieved
 
-        return expanded
+        if not siblings:
+            return retrieved
+
+        if mode == "append":
+            out = list(retrieved)
+            for group in siblings.values():
+                for lc in group:
+                    if lc.page_content not in existing_contents:
+                        existing_contents.add(lc.page_content)
+                        out.append(self._to_document(lc, score=0.5))
+            return out
+
+        # inline — 부모 바로 뒤에 삽입
+        out: list[Document] = []
+        for d in retrieved:
+            out.append(d)
+            doc_id = d.metadata.get("doc_id")
+            for page in (d.metadata.get("page_unit_index"), d.metadata.get("parent_page_index")):
+                if doc_id is None or page is None:
+                    continue
+                for lc in siblings.get((doc_id, page), []):
+                    if lc.page_content in existing_contents:
+                        continue
+                    existing_contents.add(lc.page_content)
+                    out.append(self._to_document(lc, score=d.score * 0.9))
+        return out
 
     # ────────────────────────────────────────────────────────
     # Phase G: doc_topic / qtype boost
