@@ -89,6 +89,28 @@ def _trim_messages(checkpoint: Checkpoint, max_messages: int) -> Checkpoint:
 # DynamoDB 체크포인터
 # ──────────────────────────────────────────────
 
+def _storage_key(config: dict) -> str:
+    """저장 키 = thread_id + checkpoint_ns.
+
+    LangGraph 는 서브그래프를 실행할 때 `checkpoint_ns` 를 붙여 별도
+    네임스페이스로 체크포인트를 조회한다. 이전 구현은 thread_id 만 보고
+    조회해, 서브그래프가 자기 네임스페이스로 물었는데 **부모의 체크포인트**를
+    돌려줬다. 그 결과 서브그래프가 부모 상태 위에서 시작하고, 반환값이 다시
+    부모에 합쳐져 채널이 중복됐다.
+
+    실측 (검색 경로 1턴, 서브그래프 진입 시점):
+        InMemorySaver         get_tuple -> None            → 최종  8개 (정상)
+        DynamoDBCheckpointer  get_tuple -> decision_path=1 → 최종 16개 (7 → 14 로 2배)
+
+    테이블 스깔마(HASH: thread_id)는 그대로 두고 키 문자열을 합성한다.
+    네임스페이스가 비어 있는 메인 그래프는 기존 키와 동일하므로 하위 호환된다.
+    """
+    cfg = (config or {}).get("configurable", {}) or {}
+    thread_id = cfg["thread_id"]
+    ns = cfg.get("checkpoint_ns") or ""
+    return f"{thread_id}::{ns}" if ns else str(thread_id)
+
+
 class DynamoDBCheckpointer(BaseCheckpointSaver):
     """
     LangGraph BaseCheckpointSaver — DynamoDB 구현체.
@@ -144,7 +166,7 @@ class DynamoDBCheckpointer(BaseCheckpointSaver):
     # ── BaseCheckpointSaver 인터페이스 ──
 
     def get_tuple(self, config: dict) -> Optional[CheckpointTuple]:
-        thread_id = config["configurable"]["thread_id"]
+        thread_id = _storage_key(config)
         try:
             resp = self._table().get_item(Key={"thread_id": thread_id})
             item = resp.get("Item")
@@ -202,7 +224,7 @@ class DynamoDBCheckpointer(BaseCheckpointSaver):
         metadata: CheckpointMetadata,
         new_versions: Any = None,
     ) -> dict:
-        thread_id = config["configurable"]["thread_id"]
+        thread_id = _storage_key(config)
         try:
             trimmed = _trim_messages(checkpoint, self.max_messages)
             self._table().put_item(Item={
@@ -241,7 +263,7 @@ class DynamoDBCheckpointer(BaseCheckpointSaver):
         """interrupt() 호출 시 발생하는 pending_writes를 DynamoDB에 저장합니다."""
         if not writes:
             return
-        thread_id = config["configurable"]["thread_id"]
+        thread_id = _storage_key(config)
         try:
             serialized = self._serialize([(channel, value) for channel, value in writes])
             self._table().update_item(
