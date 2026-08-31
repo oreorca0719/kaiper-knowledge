@@ -285,9 +285,11 @@ async def chat_endpoint(request: Request):
     # 오답·잘못된 라우팅 방지)
     #
     # 리셋 제외 항목:
-    #   - decision_path : Annotated[..., add] → reducer 가 append 만 수행하므로
-    #                     [] 입력은 no-op. 누적 허용 (route_after_qa_lookup 은
-    #                     [-1] 만 검사하므로 정상 동작).
+    #   - decision_path : None 을 넣어 매 턴 초기화한다 (_reset_or_add reducer).
+    #                     요청 1건의 실행 추적이지 대화 히스토리가 아니다.
+    #                     누적을 허용하면 체크포인터가 턴마다 복원 → 무한 증식하고
+    #                     (실측 5턴에 32→2,315개), DynamoDB 400KB 상한에 걸려
+    #                     체크포인트 저장이 실패하면 대화 히스토리가 통째로 깨진다.
     #   - messages      : add_messages reducer → 의도적 누적 (chat 히스토리)
     #   - original_input: router_node 가 매 턴 input_data 로 초기화
     #   - file_context*: 파일 업로드 세션 상태 — 유지
@@ -307,6 +309,7 @@ async def chat_endpoint(request: Request):
         "llm_call_count":       0,
         "retrieval_iterations": 0,
         "replan_iterations":    0,
+        "decision_path":        None,   # _reset_or_add → 매 턴 초기화
     }
     # 동기 invoke 를 스레드로 내보낸다.
     # graph_app.invoke 는 CPU/네트워크 블로킹 호출이 30초 가까이 이어지는데,

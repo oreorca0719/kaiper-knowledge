@@ -37,6 +37,17 @@ RoutingDecision = str  # "no_retrieval" | "single_retrieval" | "multi_hop_retrie
 # Citation — 답변에 부착되는 출처 식별자
 # ────────────────────────────────────────────────────────────
 
+def _reset_or_add(left: list[str] | None, right: list[str] | None) -> list[str]:
+    """decision_path 전용 reducer.
+
+    - right 가 None  → 초기화 (매 턴 시작 시 main.py 가 명시적으로 전달)
+    - 그 외          → 기존 동작대로 이어붙임
+    """
+    if right is None:
+        return []
+    return (left or []) + list(right)
+
+
 class Citation(BaseModel):
     id: int
     doc_id: str             # 출처 문서 ID (Retriever에서 부여)
@@ -99,7 +110,22 @@ class GraphState(BaseModel):
     llm_call_count: int = 0           # NFR-010 (기본 10 상한)
 
     # ─── 트레이스 (NFR-020) ─────────────────────────────────
-    decision_path: Annotated[list[str], add] = Field(default_factory=list)
+    # reducer 를 `add` 가 아니라 `replace_or_add` 로 둔다.
+    #
+    # `add` 만 쓰면 두 방향으로 폭증한다:
+    #   1) 턴 안:   서브그래프가 부모 리스트를 물려받아 전체를 반환 → 부모가 다시 append
+    #   2) 턴 사이: 체크포인터가 이전 턴 경로를 복원 → 계속 누적
+    #
+    #   실측 (브라우저 요청 5턴):
+    #     32개 → 285개 → 2,309개 → 2,312개 → 2,315개
+    #     security_gate 는 매 턴 1회 실행인데 586회 기록됨
+    #
+    # decision_path 는 "요청 1건의 실행 추적"이지 대화 히스토리가 아니다.
+    # DynamoDB 아이템 상한(400KB)에 도달하면 체크포인트 저장이 실패해
+    # 대화 히스토리 전체가 깨진다 — 관측성 문제가 아니라 기능 장애다.
+    #
+    # 따라서 노드가 `None` 을 주면 초기화하고(턴 시작), 리스트를 주면 누적한다.
+    decision_path: Annotated[list[str], _reset_or_add] = Field(default_factory=list)
     # 예: ["security:pass", "router:single_retrieval", "retrieve:hybrid",
     #     "grade:partial", "rewrite:1", "retrieve:hybrid", "grade:pass",
     #     "generate", "reflect:pass"]
