@@ -124,12 +124,45 @@ def router_node(state: GraphState) -> dict:
         if not file_present and not _has_file_mention(user_input):
             decision = "single_retrieval"
 
-    # ─── Phase A-2 학습 반영: 짧은 사실 질의가 ai_guide로 가지 않음 ───
-    # ai_guide 분류 케이스 중 명시적 안내 키워드 없으면 single_retrieval 회귀
-    _GUIDE_TRIGGERS = ["안녕", "반가워", "도움말", "help", "소개", "기능 안내", "사용법", "어떤 기능", "뭘 할 수 있"]
+    # ─── ai_guide 게이트 ───
+    #
+    # ai_guide 는 "이 어시스턴트가 뭘 할 수 있나" 를 안내하는 분기다. 여기로 잘못
+    # 보내면 검색을 통째로 건너뛰므로 문서에 답이 있어도 못 찾는다.
+    #
+    # 【실측 오분류】
+    #   "CI/CD 빌드가 실패했을 때 로그를 일일이 정리하지 않고 원인을 빠르게
+    #    찾으려면 어떤 기능을 쓰나요?"
+    #     -> ai_guide -> 어시스턴트 기능 목록을 출력 (정답: 깃랩 듀오 실패 원인 분석)
+    #
+    # 원인은 트리거를 **부분 문자열**로만 검사한 것이다. "어떤 기능" 이 들어 있으면
+    # 제품 기능을 묻는 문서 질의도 걸린다. 사내 문서 질의 중에 흔한 형태다.
+    #
+    # 【수정 — 왜 길이 기준이 아니라 '남는 내용어' 기준인가】
+    # 처음에는 "짧으면 메타 질의" 로 판정했으나 실패했다:
+    #   "보안 스캔 자동화에는 어떤 기능을 쓸 수 있나요?" (27자) -> 여전히 ai_guide
+    # 길이는 내용의 유무를 나타내지 않는다. 트리거 문구를 **제거한 나머지**에
+    # 내용어가 남는지를 본다. 순수 메타 질의는 트리거를 빼면 조사·서술어만 남는다.
+    #
+    #   "어떤 기능이 있어?"        - "어떤 기능" = "이 있어?"        (3자) -> 메타
+    #   "보안 스캔 자동화에는 ..."  - "어떤 기능" = "보안 스캔 자동화..." -> 도메인
+    _GUIDE_TRIGGERS = ["안녕", "반가워", "도움말", "help", "소개", "기능 안내", "사용법",
+                       "어떤 기능", "뭘 할 수 있", "무엇을 할 수 있"]
+    _SELF_REFS = ["너는", "너의", "너 뭐", "당신은", "당신이", "당신의", "이 시스템", "이 챗봇",
+                  "어시스턴트", "챗봇", "이 서비스", "여기서 뭘", "여기서 무엇"]
+    _META_RESIDUAL_MAX = 6      # 트리거 제거 후 남는 내용 문자 수 상한
+
     if decision == "ai_guide":
-        if not any(g in user_input for g in _GUIDE_TRIGGERS):
-            decision = "single_retrieval"
+        q = user_input.strip()
+        if any(r in q for r in _SELF_REFS):
+            pass                                    # 어시스턴트 자신을 가리킴 — 유지
+        else:
+            residual = q
+            for g in _GUIDE_TRIGGERS:
+                residual = residual.replace(g, " ")
+            # 조사·서술어·기호를 제외한 실질 문자만 센다
+            residual = re.sub(r"[^가-힣A-Za-z0-9]", "", residual)
+            if len(residual) > _META_RESIDUAL_MAX:
+                decision = "single_retrieval"
 
     # ─── Multi-hop이지만 sub_questions 없으면 single로 강등 ───
     if decision == "multi_hop_retrieval" and not subs:
