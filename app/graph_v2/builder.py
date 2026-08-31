@@ -139,6 +139,43 @@ def _rejected_node(state: GraphState) -> dict:
 # 단, reflection 자체는 유지 (verification 결과를 답변 메타로 활용 가능).
 # generator → reflection → END 경로는 항상 일관됨.
 
+def _subgraph_node(sub):
+    """서브그래프를 노드로 감싸며 `decision_path` 의 **증분만** 반환하게 한다.
+
+    문제:
+      `retrieve` / `generate` 서브그래프는 부모와 같은 `GraphState` 스키마를
+      공유한다. 따라서 부모의 누적 리스트를 그대로 물려받아 자기 항목을 붙인 뒤
+      **전체를 반환**하고, 부모의 `Annotated[list[str], add]` reducer 가 그걸 다시
+      이어붙인다. 결과적으로 앞부분이 중복된다:
+
+        부모      : [security, router, qa_lookup]
+        서브반환 : [security, router, qa_lookup, query_plan, retrieve, grade]
+        병합 후 : [security, router, qa_lookup] + [security, router, qa_lookup, ...]
+                    └────── 중복 ──────┘
+
+      서브그래프 두 개를 지나며 동일 항목이 최대 4회 기록된다.
+      기능에는 영향이 없으나(분기 판정은 서브그래프 진입 전에 끝난다),
+      평가 결과·routing 로그의 경로 진단이 왜곡된다. 에이전트 판단 경로를
+      감사해야 하는 환경에서는 그것만으로도 치명적이다.
+
+    수정:
+      진입 시점의 길이를 기억해 두고, 반환 직전에 그 지점 이후만 잘라 넘긴다.
+
+    `messages` 는 건들지 않는다. `add_messages` reducer 가 메시지 id 기준으로
+    중복을 제거하므로 같은 문제가 발생하지 않는다.
+    """
+    def _node(state: GraphState) -> dict:
+        before = len(state.decision_path or [])
+        out = sub.invoke(state)
+        if isinstance(out, dict) and "decision_path" in out:
+            out = dict(out)
+            out["decision_path"] = (out.get("decision_path") or [])[before:]
+        return out
+
+    _node.__name__ = getattr(sub, "name", None) or "subgraph_node"
+    return _node
+
+
 def build_main_graph(checkpointer=None):
     g = StateGraph(GraphState)
 
@@ -150,8 +187,8 @@ def build_main_graph(checkpointer=None):
     g.add_node("security_gate", security_gate_node)
     g.add_node("router", router_node)
     g.add_node("qa_lookup", qa_lookup_node)
-    g.add_node("retrieve", retrieve_sub)
-    g.add_node("generate", generate_sub)
+    g.add_node("retrieve", _subgraph_node(retrieve_sub))
+    g.add_node("generate", _subgraph_node(generate_sub))
     g.add_node("no_retrieval_answer", _no_retrieval_answer_node)
     g.add_node("ai_guide", _ai_guide_node)
     g.add_node("file_chat", _file_chat_node)

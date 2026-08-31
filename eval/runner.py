@@ -225,42 +225,47 @@ def run_one(graph_app, q: dict, version: str = "v1") -> dict:
 def _report_measurement_integrity(version: str) -> None:
     """실행 전 측정 조건을 로그에 남긴다. 결과 해석에 필요한 정보.
 
-    특히 Q&A 캐시: `eval/build_qa_cache.py` 가 `eval/data/labels.json`(= 정답 라벨)로
-    캐시를 채우고, v2 의 `qa_lookup` 노드는 유사도 0.92 이상이면 그 정답을 그대로
-    반환한다(retrieve 스킵). 캐시가 채워진 상태로 평가를 돌리면 정확도가
-    자기충족적이 되므로, 캐시 항목 수를 반드시 로그에 남겨야 한다.
+    특히 Q&A 캐시: `eval/build_qa_cache.py` 가 `eval/data/labels.json`(= 정답
+    라벨)로 캐시를 채우고, v2 의 `qa_lookup` 노드는 유사도 0.92 이상이면
+    그 정답을 그대로 반환한다(retrieve 생략). 따라서 쿼시가 켜진 상태의
+    정확도는 자기충족적이며 회귀 측정에 쓸 수 없다.
+
+    러너는 기본적으로 캐시를 끈다(--use-qa-cache 로만 켜진다).
+    이 함수는 그 상태를 명시적으로 기록해 결과 파일과 함께 보관되게 한다.
     """
     from app.core.config import LLM_PROVIDER, get_llm
 
     try:
-        model = getattr(get_llm(), "model", None) or getattr(get_llm(), "model_name", "?")
+        llm = get_llm()
+        model = getattr(llm, "model", None) or getattr(llm, "model_name", "?")
     except Exception as e:
         model = f"<init failed: {e}>"
 
-    print("─" * 68, flush=True)
+    bar = "-" * 68
+    print(bar, flush=True)
     print(f"[MEASURE] graph_version = {version}", flush=True)
     print(f"[MEASURE] llm_provider  = {LLM_PROVIDER}", flush=True)
     print(f"[MEASURE] llm_model     = {model}", flush=True)
-    print("[MEASURE] embedding     = google / gemini-embedding-001 (프로바이더 고정)", flush=True)
+    print("[MEASURE] embedding     = google / gemini-embedding-001", flush=True)
 
     if version == "v2":
+        from app.graph_v2.nodes.qa_lookup import qa_cache_enabled
+        enabled = qa_cache_enabled()
         try:
             from app.knowledge.qa_cache import get_qa_cache
             n = get_qa_cache().count()
         except Exception as e:
             n = -1
             print(f"[MEASURE] qa_cache 조회 실패: {e}", flush=True)
-        if n > 0:
-            print(
-                f"[MEASURE] ⚠️  qa_cache = {n}개 — 정답 라벨 기반 캐시가 활성 상태입니다.\n"
-                f"[MEASURE] ⚠️  이 상태의 정확도는 자기충족적일 수 있어 회귀 측정에 쓸 수 없습니다.\n"
-                f"[MEASURE] ⚠️  깨끗한 측정을 원하면: python -c \""
-                f"from app.knowledge.qa_cache import get_qa_cache; get_qa_cache().clear()\"",
-                flush=True,
-            )
-        elif n == 0:
-            print("[MEASURE] qa_cache     = 0개 (비어 있음 — 측정 조건 정상)", flush=True)
-    print("─" * 68, flush=True)
+
+        if not enabled:
+            print(f"[MEASURE] qa_cache     = 비활성 (적재 {n}개, 조회 안 함) — 측정 조건 정상", flush=True)
+        else:
+            print(f"[MEASURE] !! qa_cache 활성 — 적재 {n}개.", flush=True)
+            print("[MEASURE] !! 캐시는 정답 라벨(labels.json)로 적재됩니다.", flush=True)
+            print("[MEASURE] !! 이 실행의 정확도는 자기충족적이며 회귀 측정에 쓸 수 없습니다.", flush=True)
+            print("[MEASURE] !! --use-qa-cache 를 빼면 자동으로 비활성화됩니다.", flush=True)
+    print(bar, flush=True)
 
 
 def main() -> None:
@@ -272,6 +277,11 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="앞에서 N개만 (smoke test)")
     parser.add_argument("--sleep", type=float, default=0.0, help="질의 간 sleep (rate limit)")
     parser.add_argument("--version", default="v1", choices=["v1", "v2"], help="그래프 버전")
+    parser.add_argument(
+        "--use-qa-cache", action="store_true",
+        help="Q&A 캐시를 켜고 평가 (기본: 꺼짐). 캐시는 정답 라벨로 적재되므로 "
+             "켜면 정확도가 자기충족적이 된다. 캐시 동작 자체를 검증할 때만 사용할 것.",
+    )
     args = parser.parse_args()
 
     questions = json.loads(QUESTIONS_FILE.read_text(encoding="utf-8"))
@@ -290,6 +300,11 @@ def main() -> None:
         questions = [q for q in questions if q["category"] in cats]
     if args.limit:
         questions = questions[: args.limit]
+
+    # 측정 무결성: Q&A 캐시는 기본 OFF.
+    # 캐시는 labels.json(정답)으로 적재되므로 켜 둔 채 평가하면 수치가
+    # 자기충족적이 된다. 그래프 빌드 전에 세팅해야 노드가 이 값을 읽는다.
+    os.environ["QA_CACHE_ENABLED"] = "1" if args.use_qa_cache else "0"
 
     print(f"Building graph app (version={args.version})...", flush=True)
     graph_app = build_graph_app(version=args.version)

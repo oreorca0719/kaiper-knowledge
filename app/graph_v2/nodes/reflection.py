@@ -13,6 +13,7 @@ Reflection 실패 + replan_iterations < 1 → router로 회귀.
 """
 from __future__ import annotations
 
+import os
 import json
 import re
 from typing import Optional
@@ -58,9 +59,39 @@ _NO_INFO_PHRASES = [
 ]
 
 
+# no_info_misclaim 전용 임계값.
+#
+# RERANK_RELEVANT_THRESHOLD(0.5) 를 그대로 쓰면 안 되는 이유:
+#   bge-reranker 는 raw logit 을 내고 이를 sigmoid 로 0~1 정규화한다.
+#   sigmoid(0) = 0.5 — 즉 0.5 는 모델이 "판단 불가/중립"인 지점이다.
+#   임계값을 0.5 로 두면 "무관하다고 적극적으로 말하지 않음"이
+#   "관련 있음"으로 집계된다.
+#
+# 실측 사례: "연차 규정" 질의에 GitLab 문서만 있는 코퍼스를 검색했는데
+#   grade:pass(7rel/7kept/7total, max=0.50) — 완전히 무관한 7개가 전부
+#   "relevant" 로 잡혔고, 그 때문에 정답("찾을 수 없습니다")이
+#   misclaim 으로 오판정됐다.
+#
+# 따라서 이 휴리스틱은 명확히 양의 신호(logit +1.0 → 0.731)를 요구한다.
+# grader 의 임계값은 건드리지 않는다 — 검색 동작이 바뀌면 재측정이 필요하고,
+# 이건 검증 휴리스틱만의 문제이기 때문이다.
+NO_INFO_MISCLAIM_MIN_SCORE = float(os.getenv("NO_INFO_MISCLAIM_MIN_SCORE", "0.7"))
+NO_INFO_MISCLAIM_MIN_DOCS  = int(os.getenv("NO_INFO_MISCLAIM_MIN_DOCS", "3"))
+
+
 def _check_no_info_misclaim(answer: str, docs: list[Document]) -> bool:
-    """답변이 '정보 없음'인데 chunks가 충분히 있으면 의심."""
-    if len(docs) < 3:
+    """답변이 '정보 없음'인데 **분명히 관련 있는** chunk 가 충분하면 의심.
+
+    개수가 아니라 관련도 점수로 센다. 점수 0.9짜리 7개와 중립(0.5) 7개는
+    완전히 다른 상황이다.
+    """
+    if not answer or not docs:
+        return False
+    strong = [
+        d for d in docs
+        if float(getattr(d, "score", 0.0) or 0.0) >= NO_INFO_MISCLAIM_MIN_SCORE
+    ]
+    if len(strong) < NO_INFO_MISCLAIM_MIN_DOCS:
         return False
     short = len(answer) < 200
     has_no_info = any(p in answer for p in _NO_INFO_PHRASES)

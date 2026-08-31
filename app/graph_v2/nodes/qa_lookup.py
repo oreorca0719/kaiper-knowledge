@@ -10,10 +10,28 @@ QA Lookup Node — Q&A 캐시 유사도 검색 (chunk_question_types 대체).
 """
 from __future__ import annotations
 
+import os
+
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.graph_v2.states.state import Citation, GraphState
 from app.knowledge.qa_cache import get_qa_cache
+
+
+def qa_cache_enabled() -> bool:
+    """Q&A 캐시 사용 여부 (기본 활성). `QA_CACHE_ENABLED=0` 이면 무력화.
+
+    존재 이유 — 측정 무결성:
+      Q&A 캐시는 `eval/data/labels.json`(정답 라벨)으로 적재된다
+      (`eval/build_qa_cache.py`). 캐시가 채워진 상태로 평가를 돌리면 유사도
+      0.92 이상 문항은 정답이 그대로 반환되고 retrieve 가 생략되어 정확도가
+      자기충족적이 된다 — 답안지를 펴 놓고 시험을 보는 상태다.
+
+      운영에서는 정당한 기능(자주 묻는 질문 즉답)이므로 기본은 활성이되,
+      평가 러너가 이 값을 명시적으로 꺼서 오염된 측정이 원천적으로
+      불가능하게 한다.
+    """
+    return (os.getenv("QA_CACHE_ENABLED", "1") or "1").strip().lower() not in ("0", "false", "no")
 
 
 def qa_lookup_node(state: GraphState) -> dict:
@@ -23,7 +41,11 @@ def qa_lookup_node(state: GraphState) -> dict:
       - bypass hit: answer/citations/messages 직접 작성 (route_after_qa_lookup → end)
       - hint hit: sub_questions에 캐시 질문 prepend (retrieve가 multi-query로 사용)
       - miss: 변경 없음
+      - disabled: 변경 없음 (QA_CACHE_ENABLED=0)
     """
+    if not qa_cache_enabled():
+        return {"decision_path": ["qa_lookup:disabled"]}
+
     user_input = (state.input_data or "").strip()
     if not user_input:
         return {"decision_path": ["qa_lookup:empty_query"]}
