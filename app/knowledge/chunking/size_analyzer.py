@@ -33,6 +33,46 @@ SIZE_THRESHOLDS: dict[str, dict[str, int]] = {
 }
 
 
+def _context_header(unit) -> str:
+    """분할 조각에 붙일 맥락 헤더 (section_path / title)."""
+    parts = [p.strip() for p in (getattr(unit, "section_path", ""), getattr(unit, "title", "")) if (p or "").strip()]
+    # 중복 제거하되 순서 보존
+    seen, out = set(), []
+    for p in parts:
+        if p not in seen:
+            seen.add(p); out.append(p)
+    return " / ".join(out)
+
+
+def _with_header(fragment: str, header: str) -> str:
+    """분할 조각 앞에 맥락 헤더를 붙인다.
+
+    【이유】
+    긴 unit 을 자르면 2번째 이후 조각은 **제목을 잃는다**. 임베딩도 BM25 도
+    그 조각을 원 주제와 연결하지 못해 검색에서 사라진다.
+
+    실측 (KB국민은행_GitLab_Duo_설명회자료 p41, VLM 전사 2,279자):
+        chunk#119  152자  "-41 지원 가능한 모델들 ... ## 지원 모델"   split=1/4  제목만
+        chunk#120 1500자  "| Model family | Model | ..."          split=2/4  표만
+        chunk#122  607자  "## 호환 가능 모델 | CodeGemma | ..."     split=4/4  표만
+
+      질의 "지원 가능한 모델"은 제목만 있는 빈 껍데기(#119)를 찾고,
+      정작 답이 있는 #120·#122 는 그 문구가 없어 검색되지 않았다.
+      같은 슬라이드라도 493자로 안 쪼개진 GPU 표(#123)는 정상 검색됐다.
+
+    원본 저장소에서 "PPT 비교 표 평탄화" 로 8건 미해결로 남아 있던 결함의
+    실제 메커니즘이 이것이다. 조각마다 제목을 상속시켜 해소한다.
+    (chunk 별 맥락 헤더를 붙이는 Contextual Retrieval 패턴의 구조 기반 구현)
+    """
+    if not header:
+        return fragment
+    # 이미 헤더로 시작하면 중복해서 붙이지 않는다
+    head_line = fragment.lstrip().split("\n", 1)[0]
+    if header in fragment[:len(header) + 120] or head_line.strip() == header:
+        return fragment
+    return f"{header}\n\n{fragment}"
+
+
 def _split_text(text: str, max_size: int, overlap: int = 50) -> list[str]:
     """단락 경계 우선 분할. 단락이 더 크면 슬라이딩 윈도우."""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
@@ -121,13 +161,14 @@ def adaptive_chunk(units: list[PageUnit], format: str) -> list[PageUnit]:
         if size > split_above:
             _flush_pending()
             split_texts = _split_text(unit.text, max_size=split_above)
+            header = _context_header(unit)
             for i, t in enumerate(split_texts):
                 out.append(PageUnit(
                     unit_index=unit.unit_index,
                     unit_type=unit.unit_type,
                     title=unit.title + (f" (part {i+1}/{len(split_texts)})" if len(split_texts) > 1 else ""),
                     section_path=unit.section_path,
-                    text=t,
+                    text=_with_header(t, header),
                     is_table=False,
                     raw_metadata={**unit.raw_metadata, "split_part": f"{i+1}/{len(split_texts)}"},
                 ))

@@ -15,15 +15,38 @@ from app.knowledge.chunking.page_unit import PageUnit
 from app.knowledge.chunking.extractors.vlm_page import should_try_vlm, transcribe_page
 
 
-# 헤딩 추정: 페이지 첫 줄 중 짧고 다음 줄과 빈 줄이 있는 경우
+# 페이지 번호·머리말만 있는 줄 (제목으로 쓰면 안 됨)
+#   슬라이드 PDF 는 "-41", "page_ 37", "© GitLab Inc." 같은 줄로 시작하는 일이 잦다.
+#   이걸 제목으로 잡으면 분할 조각에 붙는 맥락 헤더가 무의미해진다.
+_PAGE_MARKER_RE = re.compile(
+    r"^(?:[-–—]?\s*\d{1,4}|page[_\s]*\d+|p\.?\s*\d+|©.*|slide\s*\d+)$", re.I
+)
+
+
 def _guess_title(page_text: str) -> str:
+    """페이지 제목 추정.
+
+    VLM 전사가 붙은 경우 마크다운 헤딩(`# ...`)을 최우선으로 쓴다.
+    전사물의 헤딩이 슬라이드 제목을 가장 정확히 담고 있기 때문이다.
+    """
     lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
     if not lines:
         return ""
-    first = lines[0]
-    # 30자 이내 + 첫 줄이 단순한 경우 제목으로 간주
-    if len(first) <= 30 and not first.endswith(("다.", "요.", "음.")):
-        return first
+
+    # 1순위: 마크다운 헤딩 (VLM 전사 결과)
+    for ln in lines[:12]:
+        if ln.startswith("#"):
+            h = ln.lstrip("#").strip()
+            if 2 <= len(h) <= 90:
+                return h
+
+    # 2순위: 페이지 마커가 아닌 첫 줄
+    for ln in lines[:4]:
+        if _PAGE_MARKER_RE.match(ln):
+            continue
+        if len(ln) <= 90 and not ln.endswith(("다.", "요.", "음.")):
+            return ln
+        break
     return ""
 
 
