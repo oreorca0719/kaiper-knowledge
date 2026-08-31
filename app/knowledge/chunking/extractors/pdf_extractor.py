@@ -23,31 +23,62 @@ _PAGE_MARKER_RE = re.compile(
 )
 
 
-def _guess_title(page_text: str) -> str:
-    """페이지 제목 추정.
+# 제목 최대 길이. 분할 조각마다 앞에 붙으므로 지나치게 길면 안 된다.
+_TITLE_MAX = 120
 
-    VLM 전사가 붙은 경우 마크다운 헤딩(`# ...`)을 최우선으로 쓴다.
-    전사물의 헤딩이 슬라이드 제목을 가장 정확히 담고 있기 때문이다.
+
+def _title_candidates(page_text: str) -> list[str]:
+    """제목 후보들을 모은다.
+
+    두 갈래를 모두 본다:
+      (a) pypdf 원문 첫 줄  — 슬라이드 제목이 한 줄에 온전히 들어 있는 경우가 많다
+      (b) VLM 마크다운 헤딩 + 바로 뒤 부제 줄
+
+    한쪽만 쓰면 구분 정보를 잃는다. 실측:
+        pypdf   '지원 가능한 모델들 – Models and hardware requirements-Self-Managed환경 (폐쇄망)'
+        VLM     '# 지원 가능한 모델들 – Models and hardware requirements'
+                '- Self-Managed환경 (폐쇄망)'      <- 부제가 분리됨
+
+    VLM 헤딩만 채택하면 'Self-Managed / 폐쇄망' 이 제목에서 빠지고, 같은 문서의
+    다른 슬라이드('GitLab DAP (인터넷 연결 가능시)') 와 구별되지 않는다.
+    실제로 "자체 호스팅 모델" 질의가 클라우드 모델 표만 찾고 실패했다.
     """
     lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
-    if not lines:
-        return ""
+    out: list[str] = []
 
-    # 1순위: 마크다운 헤딩 (VLM 전사 결과)
-    for ln in lines[:12]:
-        if ln.startswith("#"):
-            h = ln.lstrip("#").strip()
-            if 2 <= len(h) <= 90:
-                return h
-
-    # 2순위: 페이지 마커가 아닌 첫 줄
+    # (a) 페이지 마커가 아닌 첫 줄
     for ln in lines[:4]:
         if _PAGE_MARKER_RE.match(ln):
             continue
-        if len(ln) <= 90 and not ln.endswith(("다.", "요.", "음.")):
-            return ln
+        if not ln.startswith("#") and not ln.endswith(("다.", "요.", "음.")):
+            out.append(ln)
         break
-    return ""
+
+    # (b) 마크다운 헤딩 + 뒤따르는 부제 줄
+    for i, ln in enumerate(lines[:12]):
+        if not ln.startswith("#"):
+            continue
+        parts = [ln.lstrip("#").strip()]
+        for nxt in lines[i + 1: i + 3]:
+            # 부제로 볼 수 있는 짧은 줄만 (표 행·본문 제외)
+            if nxt.startswith("|") or len(nxt) > 60:
+                break
+            cleaned = nxt.lstrip("#-–—•* ").strip()
+            if not cleaned or cleaned.startswith("|"):
+                break
+            parts.append(cleaned)
+        out.append(" ".join(parts))
+        break
+
+    return [t for t in out if 2 <= len(t) <= _TITLE_MAX]
+
+
+def _guess_title(page_text: str) -> str:
+    """페이지 제목 추정 — 후보 중 정보량이 가장 많은 것을 고른다."""
+    cands = _title_candidates(page_text)
+    if not cands:
+        return ""
+    return max(cands, key=len)
 
 
 # 섹션 패턴 (예: "1. 교육 대상", "PART 02", "3-1 후속 액션")
