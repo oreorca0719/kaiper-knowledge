@@ -12,6 +12,7 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from app.knowledge.chunking.page_unit import PageUnit
+from app.knowledge.chunking.extractors.vlm_page import should_try_vlm, transcribe_page
 
 
 # 헤딩 추정: 페이지 첫 줄 중 짧고 다음 줄과 빈 줄이 있는 경우
@@ -41,6 +42,18 @@ def extract_pdf(path: Path) -> list[PageUnit]:
             text = (page.extract_text() or "").strip()
         except Exception:
             text = ""
+
+        # 이미지 지배 페이지 복구.
+        # PPT 를 PDF 로 내보낸 자료는 표·다이어그램이 이미지로 박혀 있어
+        # 텍스트 레이어에 제목만 남는다. 이 자료의 경우 64페이지 중 27페이지가
+        # 120자 미만이었고, "지원 가능한 모델" 표가 통째로 소실돼 사용자 질의에
+        # 답할 수 없었다. VLM 으로 전사해 본문을 복구한다 (인제스트 시점 1회).
+        vlm_text = ""
+        if should_try_vlm(text, page):
+            vlm_text = transcribe_page(path, page_idx - 1, existing_text=text)
+        if vlm_text:
+            text = "\n\n".join(p for p in (text, vlm_text) if p).strip()
+
         if not text:
             continue
 
@@ -61,6 +74,7 @@ def extract_pdf(path: Path) -> list[PageUnit]:
             raw_metadata={
                 "format": "pdf",
                 "page_size_chars": len(text),
+                "vlm_transcribed": bool(vlm_text),
             },
         ))
 

@@ -44,6 +44,10 @@ python-dotenv==1.1.0
 
 # --- 문서/파일 추출 --------------------------------------------------------
 pypdf==6.7.3
+# PDF 페이지를 이미지로 렌더 — 표·다이어그램이 이미지로 박힌 슬라이드를
+# VLM 으로 전사하기 위해 필요 (app/knowledge/chunking/extractors/vlm_page.py).
+# 실측: 대상 코퍼스 64페이지 중 27페이지(42%)가 텍스트 120자 미만이었다.
+pymupdf==1.28.2
 python-docx==1.2.0
 openpyxl==3.1.5
 python-pptx==1.0.2
