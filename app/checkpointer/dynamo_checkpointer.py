@@ -167,8 +167,18 @@ class DynamoDBCheckpointer(BaseCheckpointSaver):
                 except Exception as e:
                     print(f"[CHECKPOINT] pending_writes 역직렬화 실패 (non-fatal): {e}")
 
+            # 복원된 체크포인트의 실제 id 로 config 를 구성한다.
+            # 입력 config 를 그대로 돌려주면 LangGraph 가 어느 체크포인트에서
+            # 재개하는지 식별하지 못한다.
+            restored_cfg = {
+                **config,
+                "configurable": {
+                    **config.get("configurable", {}),
+                    "checkpoint_id": (checkpoint or {}).get("id") or "latest",
+                },
+            }
             return CheckpointTuple(
-                config=config,
+                config=restored_cfg,
                 checkpoint=checkpoint,
                 metadata=metadata,
                 parent_config=None,
@@ -204,11 +214,21 @@ class DynamoDBCheckpointer(BaseCheckpointSaver):
             })
         except Exception as e:
             print(f"[CHECKPOINT] put 실패 (thread_id={thread_id}): {e}")
+        # LangGraph 는 반환된 checkpoint_id 로 superstep 진행 상태를 추적한다.
+        # 이전 구현은 항상 "latest" 문자열을 돌려주어 연속된 체크포인트가 같은
+        # 것으로 취급됐고, 동일 write 가 채널에 반복 적용됐다.
+        #
+        #   실측 (검색 경로 1턴, 신규 thread):
+        #     노드 실제 실행   security_gate 1회 / router 1회
+        #     decision_path   security:pass 2회 / router 4회 로 기록
+        #     InMemorySaver 는 실제 id 를 쓰므로 8개 (정상), 이 구현은 18개
+        #
+        # checkpoint 가 자체적으로 갖는 고유 id 를 그대로 반환한다.
         return {
             **config,
             "configurable": {
                 **config.get("configurable", {}),
-                "checkpoint_id": "latest",
+                "checkpoint_id": (checkpoint or {}).get("id") or "latest",
             },
         }
 
