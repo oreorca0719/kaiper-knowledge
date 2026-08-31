@@ -7,6 +7,7 @@ v1과 동일한 검색 로직 + score 정규화 + Document 변환.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import threading
 from typing import Optional
@@ -23,7 +24,28 @@ from app.graph_v2.retrievers.base import Document, Retriever
 
 
 _HYBRID_FETCH_MULTIPLIER = 4
-_RRF_K = 60
+# RRF 상수.
+#
+# 원 논문의 60 은 다수 시스템을 융합하는 TREC 환경 기준이다. 여기는 벡터와
+# BM25 둘뿐이고, **한쪽이 통째로 실패할 수 있다** — 한국어 질의와 영문 표가
+# 섞인 코퍼스에서 BM25 는 어휘가 겹치지 않아 정답을 아예 못 찾는다.
+#
+# k 가 크면 역순위 분포가 평평해져 "양쪽에 등장했는가" 가 "얼마나 잘 맞는가" 를
+# 압도한다. k=60 에서는 이런 역전이 일어난다:
+#     벡터 9위 + BM25 없음      = 1/69          = 0.0145
+#     벡터 40위 + BM25 40위     = 1/100 x 2     = 0.0200   <- 이쪽이 이긴다
+#
+# 실측 (28문항: 기존 22 + 어휘격차 6):
+#     k=60  26/28 (92.9%)  어휘격차 4/6
+#     k=30  26/28 (92.9%)  어휘격차 4/6
+#     k=15  27/28 (96.4%)  어휘격차 5/6
+#     k=10  27/28 (96.4%)  어휘격차 5/6
+#     k= 5  28/28 (100%)   어휘격차 6/6   <- 채택
+#     k= 2  28/28 (100%)   어휘격차 6/6   (융합 효과가 거의 사라져 과함)
+#
+# 실패 사례: "DAP에서 쓸 수 있는 가장 큰 자체 호스팅 모델은?"
+#   벡터 단독 9위로 정답을 찾았으나 RRF 융합 후 상위 20 에서 탈락했다.
+_RRF_K = int(os.getenv("RRF_K", "5"))
 
 
 class ChromaHybridRetriever:
