@@ -60,3 +60,7 @@ kiwipiepy>=0.23.0,<0.24.0
 
 # --- Cross-encoder reranker (grader) ---------------------------------------
 sentence-transformers==5.4.1
+# torch 를 명시적으로 핀한다. 미지정 시 sentence-transformers 가 최신을 끌어와
+# 검증 버전과 달라진다 (최초 빌드에서 2.13.0 이 설치되어 확인됨).
+# Dockerfile 이 CPU 전용 인덱스에서 먼저 설치하므로 여기서는 버전만 고정.
+torch==2.10.0

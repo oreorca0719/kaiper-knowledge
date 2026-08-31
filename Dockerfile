@@ -14,6 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 5. Python 의존성 설치
 COPY requirements.txt .
+
+# torch 는 CPU 전용 인덱스에서 먼저 설치한다.
+# PyPI 의 기본 torch wheel 은 nvidia-cudnn / nvidia-cublas / triton 등 CUDA
+# 런타임을 의존성으로 끌고 온다 (aarch64 도 동일). 이 컨테이너는 CPU 전용
+# 이라 단 한 번도 로드되지 않으면서 이미지만 ~6GB 부풀린다.
+#   측정: CUDA 포함 8.32GB -> CPU 전용 약 2.5GB
+RUN pip install --no-cache-dir     --index-url https://download.pytorch.org/whl/cpu     torch==2.10.0
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 6. Cross-encoder reranker 모델 사전 다운로드 (이미지에 포함 → 컨테이너 시작 시 빠른 cold start)
