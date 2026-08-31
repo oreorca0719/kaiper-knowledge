@@ -45,9 +45,30 @@ from app.graph_v2.retrievers.reranker import (
 #     리랭커 순위   10위  score=0.524  -> 상위 7 컷오프에서 탈락
 #     20개 중 17개가 0.50~0.54 구간 (sigmoid(0)=0.5 = "판단 불가")
 #
-# off 로 두면 응답 시간의 58% (실측 61초 중 35초) 와 메모리 2.3GB 를 회수한다.
-# 어느 쪽이 나은지는 recall@7 측정으로 결정한다.
-RERANK_MODE = (os.getenv("RERANK_MODE", "replace") or "replace").strip().lower()
+# 【기본값을 off 로 정한 근거 — 실측】
+#
+# 1) recall 에 영향이 없다.
+#    retrieve_node 가 RETRIEVAL_FINAL_K 로 자른 뒤 grader 에 넘기므로,
+#    어떤 문서가 generator 에 도달하는지는 RRF + co-retrieval + boost 가
+#    전적으로 결정한다. 리랭커는 그 안의 순서만 바꾼다.
+#
+# 2) 정확도를 떨어뜨린다.  질문 5개 x 키워드 적중 / 평균 응답시간
+#      FINAL=7  리랭커 replace   10/24 (42%)   59.9s
+#      FINAL=15 리랭커 off       13/24 (54%)   19.4s
+#      FINAL=15 리랭커 fuse      12/24 (50%)  107.1s
+#      FINAL=20 리랭커 off       17/24 (71%)   21.4s   <- 채택
+#
+# 3) 비용이 크다. 쌍당 4~6초 (2 vCPU ARM, max_length=512).
+#    코드 주석의 '~50ms/pair' 는 x86 기준으로 80배 차이가 난다.
+#
+# 4) 이 코퍼스에서 변별력이 없다. 20개 chunk 중 17개가 0.50~0.54 구간
+#    (sigmoid(0)=0.5 = 판단 불가) 에 몰렸다. 슬라이드 PDF 평탄화 텍스트라
+#    문장 구조가 깨져 있고 한국어 질의와 영문 표가 섞이기 때문이다.
+#
+# off 이면 모델을 로드하지 않아 메모리 2.3GB 도 회수된다.
+# 코퍼스 성격이 다른 환경(정제된 산문 등)에서는 replace 가 유리할 수 있어
+# 코드는 남겨 두고 기본값만 off 로 둔다.
+RERANK_MODE = (os.getenv("RERANK_MODE", "off") or "off").strip().lower()
 
 
 def _coverage_from_scores(scores: list[float], relevant_count: int) -> str:

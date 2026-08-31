@@ -159,8 +159,24 @@ RETRIEVAL_TOP_K         = int(os.getenv("RETRIEVAL_TOP_K", "5"))
 # v2 운영 파라미터.
 # 이전에는 retrieve.py 에 20 이 하드코딩되어 있어 task definition 의
 # RETRIEVAL_TOP_K=10 이 아무 효과가 없었다 (형상 관리와 실제 동작 불일치).
+#
+# 【FINAL_K = 20 의 근거 — 실측】
+# 원래 7 이었다. 컨텍스트가 비싸고 짧던 시절의 값이며, 답이 여러 chunk 에
+# 걸치는 질문(표가 분할된 경우 등)에서 일부만 도달해 답변이 불완전했다.
+# claude-sonnet-5 는 1M 컨텍스트라 20개를 넣어도 부담이 없다.
+#
+#   질문 5개 x 키워드 적중 / 평균 응답시간
+#     CAND=20 FINAL=7  리랭커 on   10/24 (42%)   59.9s   <- 이전 기본값
+#     CAND=20 FINAL=15 리랭커 off  13/24 (54%)   19.4s
+#     CAND=20 FINAL=20 리랭커 off  17/24 (71%)   21.4s   <- 채택
+#     CAND=40 FINAL=25 리랭커 off  15/24 (62%)   21.8s
+#     CAND=40 FINAL=35 리랭커 off  16/24 (67%)   19.5s
+#     CAND=60 FINAL=45 리랭커 off  14/24 (58%)   20.5s
+#
+# 더 넣으면 오히려 떨어진다 — 관련 내용이 긴 컨텍스트에 묻히는 context rot.
+# 후보 풀과 최종 컷을 같은 값으로 두어 절단 없이 전달한다.
 RETRIEVAL_CANDIDATE_TOP_K = int(os.getenv("RETRIEVAL_CANDIDATE_TOP_K", "20"))
-RETRIEVAL_FINAL_K         = int(os.getenv("RETRIEVAL_FINAL_K", "7"))
+RETRIEVAL_FINAL_K         = int(os.getenv("RETRIEVAL_FINAL_K", "20"))
 
 # rewrite 재시도 한도. 이전에는 grader(3) / subgraph(1) / generator 로그 라벨(3) 로
 # 흩어져 있어 실제 한도는 1 인데 grader 는 3 을 기준으로 라벨을 만들었다.

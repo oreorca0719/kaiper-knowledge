@@ -78,8 +78,16 @@
           "value": "120"
         },
         {
+          "name": "PDF_VLM_EXTRACT",
+          "value": "1"
+        },
+        {
           "name": "RERANK_MAX_LENGTH",
           "value": "512"
+        },
+        {
+          "name": "RERANK_MODE",
+          "value": "off"
         },
         {
           "name": "RERANK_MODEL",
@@ -92,6 +100,14 @@
         {
           "name": "RERANK_RELEVANT_THRESHOLD",
           "value": "0.5"
+        },
+        {
+          "name": "RETRIEVAL_CANDIDATE_TOP_K",
+          "value": "20"
+        },
+        {
+          "name": "RETRIEVAL_FINAL_K",
+          "value": "20"
         },
         {
           "name": "RETRIEVAL_MAX_DISTANCE",
