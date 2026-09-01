@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import uuid
@@ -11,7 +12,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -257,6 +258,178 @@ async def chat_reset(request: Request):
 # =========================
 # Chat Endpoint (interrupt 패턴)
 # =========================
+# =========================
+# 스트리밍 공용 헬퍼
+# =========================
+
+def _build_chat_inputs(trace_id: str, user_input: str) -> dict:
+    """그래프 invoke/astream 에 넣을 초기 상태.
+
+    체크포인터가 이전 턴 상태를 복원하므로 출력·처리 필드는 매 턴 명시적으로
+    비워야 한다. decision_path 는 None 을 넣어 reducer 가 초기화하게 한다
+    (누적 허용 시 5턴에 32 -> 2,315개로 증식해 DynamoDB 400KB 상한에 걸린다).
+    """
+    return {
+        "trace_id":             trace_id,
+        "input_data":           user_input,
+        "input_embedding":      None,
+        "answer":               "",
+        "citations":            [],
+        "verification":         None,
+        "routing_decision":     "",
+        "question_type":        "reasoning",
+        "security_blocked":     False,
+        "security_reason":      "",
+        "sub_questions":        [],
+        "retrieved_docs":       [],
+        "llm_call_count":       0,
+        "retrieval_iterations": 0,
+        "replan_iterations":    0,
+        "decision_path":        None,
+    }
+
+
+def _citations_to_sources(raw_citations, answer: str) -> list:
+    """답변에 실제로 등장한 [N] 만 출처로 남긴다."""
+    cited = {int(x) for x in re.findall(r"\[(\d{1,3})\]", answer or "")}
+    out = []
+    for c in raw_citations or []:
+        if hasattr(c, "model_dump"):
+            d = c.model_dump()
+        elif hasattr(c, "dict"):
+            d = c.dict()
+        elif isinstance(c, dict):
+            d = c
+        else:
+            continue
+        if isinstance(d.get("id"), int) and d["id"] in cited:
+            out.append(d)
+    return out
+
+
+@app.post("/chat/stream")
+async def chat_stream_endpoint(request: Request):
+    """SSE 로 답변을 토큰 단위로 흘려보낸다.
+
+    【왜 필요한가 — 실측】
+    비스트리밍 경로는 평균 13.8초 동안 화면이 비어 있다. 그중 답변 생성이
+    5~8초이고, 그 뒤 reflection 이 3~4초 더 도는데 그 결과는 응답에 쓰이지
+    않는다. 즉 사용자는 자기 답변이 이미 완성된 뒤에도 수 초를 더 기다린다.
+
+    총 소요는 비슷하지만 첫 글자가 훨씬 빨리 도달하고, 답변 생성이 끝나는
+    즉시 화면에 다 찍힌다.
+
+    【방어적 구조】
+    LangGraph 가 서브그래프(generate) 안의 LLM 토큰을 밖으로 내보내는지는
+    버전·구성에 따라 다르다. 토큰이 하나도 안 나오면 마지막에 완성된 답변을
+    한 번에 보내므로, 어느 경우든 사용자는 정상적으로 답을 받는다.
+    응답의 streamed 플래그로 어느 경로였는지 확인할 수 있다.
+
+    형식 (text/event-stream):
+        data: {"t": "부분 텍스트"}     ... 0회 이상
+        data: {"done": true, "answer": "...", "sources": [...]}
+    """
+    user = get_current_user(request)
+    require_approved_user(user)
+
+    data = await request.json()
+    user_input = data.get("message", "")
+
+    _max_input = int(os.getenv("CHAT_MAX_INPUT_CHARS", "4000"))
+    if len(user_input) > _max_input:
+        raise HTTPException(status_code=400, detail=f"입력이 너무 깁니다. 최대 {_max_input}자까지 허용됩니다.")
+
+    _ensure_llm_ready_or_503()
+
+    trace_id  = str(uuid.uuid4())
+    thread_id = str(user.get("user_id") or user.get("email"))
+    config    = {"configurable": {"thread_id": thread_id}, "recursion_limit": 25}
+    inputs    = _build_chat_inputs(trace_id, user_input)
+
+    async def _events():
+        streamed = []
+        final_state = {}
+        try:
+            async for item in graph_app.astream(
+                inputs, config=config, stream_mode=["messages", "values"], subgraphs=True
+            ):
+                if isinstance(item, tuple) and len(item) == 3:
+                    _ns, mode, payload = item
+                elif isinstance(item, tuple) and len(item) == 2:
+                    mode, payload = item
+                else:
+                    continue
+
+                if mode == "values":
+                    if isinstance(payload, dict):
+                        final_state = payload
+                    continue
+                if mode != "messages":
+                    continue
+
+                chunk, meta = payload if isinstance(payload, tuple) else (payload, {})
+                node = (meta or {}).get("langgraph_node") or ""
+                # 답변 생성 노드의 토큰만. router/query_planner/reflection 은 제외.
+                if node not in ("generate", "generator"):
+                    continue
+                text = extract_text_content(getattr(chunk, "content", "") or "")
+                if not text:
+                    continue
+                streamed.append(text)
+                yield "data: " + json.dumps({"t": text}, ensure_ascii=False) + "\n\n"
+
+        except Exception as e:
+            print(f"[CHAT_STREAM] astream 실패 → 동기 경로로 대체: {type(e).__name__}: {e}")
+            streamed = []
+            try:
+                final_state = await asyncio.to_thread(graph_app.invoke, inputs, config=config)
+            except Exception as e2:
+                print(f"[CHAT_STREAM] 동기 경로도 실패: {type(e2).__name__}: {e2}")
+                yield "data: " + json.dumps(
+                    {"done": True, "answer": "응답 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+                     "sources": [], "error": True}, ensure_ascii=False) + "\n\n"
+                return
+
+        if final_state.get("security_reason") == "detector_unavailable":
+            yield "data: " + json.dumps(
+                {"done": True, "error": True,
+                 "answer": "보안 검사 모듈을 일시적으로 사용할 수 없어 요청을 처리하지 않았습니다. "
+                           "잠시 후 다시 시도해 주세요.", "sources": []},
+                ensure_ascii=False) + "\n\n"
+            return
+
+        answer = (final_state.get("answer") or "").strip()
+        _, answer = validate_output(answer)
+        if not answer:
+            answer = "응답을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
+
+        # 토큰이 안 나온 경우(서브그래프 이벤트 미노출 등) 완성본을 한 번에 보낸다
+        if not streamed:
+            yield "data: " + json.dumps({"t": answer}, ensure_ascii=False) + "\n\n"
+
+        try:
+            save_routing_log(
+                user_id=thread_id, input_text=user_input,
+                final_task=(final_state.get("routing_decision") or "unknown"),
+                routing_debug={"decision_path": final_state.get("decision_path", [])},
+            )
+        except Exception as e:
+            print(f"[CHAT_STREAM] 라우팅 로그 저장 실패 (non-fatal): {e}")
+
+        yield "data: " + json.dumps({
+            "done": True,
+            "answer": answer,
+            "sources": _citations_to_sources(final_state.get("citations"), answer),
+            "routing_debug": {"decision_path": final_state.get("decision_path", [])},
+            "streamed": bool(streamed),
+        }, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(
+        _events(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     user = get_current_user(request)

@@ -149,6 +149,56 @@ function appendBot(htmlContent) {
   chatBox.scrollTop = chatBox.scrollHeight;
 }
 
+// ── 스트리밍 렌더 ────────────────────────────────────
+// 서버가 SSE 로 토큰을 흘려보내면 빈 말풍선을 먼저 띄우고 글자를 채운다.
+// 마크다운은 조각 단위로 파싱하면 표·목록이 깨지므로, 스트리밍 중에는
+// 평문으로 붙이고 완료 시점에 한 번만 마크다운으로 다시 그린다.
+function appendBotStreaming() {
+  const id = 'stream-' + Date.now();
+  chatBox.innerHTML += `
+    <div id="${id}" class="message bot">
+      <div class="bot-avatar"></div>
+      <div class="content"></div>
+    </div>`;
+  chatBox.scrollTop = chatBox.scrollHeight;
+  return id;
+}
+
+function streamAppendText(id, text) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const c = el.querySelector('.content');
+  c.textContent += text;
+  chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function streamFinalize(id, markdownText, sourcesHtml) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.querySelector('.content').innerHTML =
+    marked.parse(escapeTilde(markdownText || '')) + (sourcesHtml || '');
+  chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+// SSE 본문을 줄 단위로 읽어 data: {...} 를 파싱한다.
+async function readSSE(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const raw = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 2);
+      if (!raw.startsWith('data:')) continue;
+      try { onEvent(JSON.parse(raw.slice(5).trim())); } catch (_) { /* 부분 프레임 무시 */ }
+    }
+  }
+}
+
 function showError(loadingId, msg) {
   const el = document.getElementById(loadingId);
   if (el) el.querySelector('.content').textContent = '오류: ' + msg;
@@ -219,7 +269,35 @@ async function send() {
     return;
   }
 
-  // ── 텍스트 전용 → /chat ───────────────────────────────
+  // ── 텍스트 전용 → /chat/stream (SSE) ─────────────────
+  // 비스트리밍 경로는 평균 13.8초 동안 화면이 비어 있었다. 첫 글자를 먼저
+  // 보여주기 위해 스트리밍을 쓰고, 실패하면 아래 catch 에서 /chat 으로 되돌린다.
+  try {
+    const sres = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    if (sres.redirected) { window.location.href = sres.url; return; }
+    if (!sres.ok || !sres.body) throw new Error('stream_unavailable');
+
+    removeLoading(loadingId);
+    const sid = appendBotStreaming();
+    let acc = '';
+    let finished = false;
+    await readSSE(sres, (ev) => {
+      if (ev.t) { acc += ev.t; streamAppendText(sid, ev.t); }
+      if (ev.done) {
+        finished = true;
+        streamFinalize(sid, ev.answer || acc, renderSources(ev.sources));
+      }
+    });
+    if (!finished) streamFinalize(sid, acc, '');
+    return;
+  } catch (streamErr) {
+    console.warn('스트리밍 실패, 일반 경로로 재시도:', streamErr);
+  }
+
   try {
     const res = await fetch('/chat', {
       method: 'POST',
