@@ -83,13 +83,20 @@ from app.graph_v2.retrievers.base import Document
 # question_type 별로는 list_n 이 78.0% -> 85.4% (불일치 0 대 3, 잃은 문항 없음).
 #
 # "정확도가 향상됐다" 고 단정할 근거는 아니다. 방향이 일관되고 손해가 없어서 택했다.
-_COMMON_PRINCIPLES = """【답변 규칙】
+_COMMON_PRINCIPLES = """【검색 결과 배열】
+검색 결과는 원본 문서를 조각낸 것이다. 같은 문서에서 나온 조각은 "── 문서:"
+로 묶여 **원문 순서대로** 배열돼 있고, 바로 이어지는 조각에는
+"(앞 조각에서 이어짐)" 표시가 있다. 문장이나 표가 조각 경계에서 잘려 있을 수
+있으므로, 이어지는 조각은 함께 읽는다.
+
+【답변 규칙】
 1. 수치·고유명사·인용 문구는 검색 결과 그대로 (verbatim, paraphrase 금지).
 2. 질문이 묻는 것에 답한다. 다만 그 답을 해석하는 데 필요한 조건·단위·
    기준·전제는 검색 결과에 있는 대로 함께 밝힌다
    (예: "1.5시간" 이 아니라 "시간당 $75 기준 1.5시간").
    질문과 무관한 배경 설명은 넣지 않는다.
 3. 모든 사실 진술 뒤에 [N] citation 을 붙인다. 붙일 수 없는 진술은 쓰지 않는다.
+   근거가 여러 조각에 나뉘어 있으면 해당 조각을 모두 인용한다.
 4. 검색 결과에 답이 없으면 "관련 사내 문서를 찾을 수 없습니다."
    비슷하지만 다른 대상의 chunk 로 대신 답하지 않는다.
 5. 답변 시작에 '~는 다음과 같습니다:' 같은 서두를 쓰지 않는다 — 바로 답한다.
@@ -149,14 +156,82 @@ _PROMPT_BY_TYPE = {
 }
 
 
+def _pos_key(d: Document) -> tuple:
+    """문서 안에서의 원문 위치. (페이지, 분할 조각 번호)."""
+    m = d.metadata or {}
+    try:
+        page = int(m.get("page_unit_index") or 0)
+    except (TypeError, ValueError):
+        page = 0
+    part = 0
+    sp = m.get("split_part")
+    if sp:
+        try:
+            part = int(str(sp).replace("of", "/").split("/")[0])
+        except (TypeError, ValueError):
+            part = 0
+    return (page, part)
+
+
+def _reorder_for_context(docs: list[Document]) -> list[Document]:
+    """검색 결과를 원문 순서로 재배열한다.
+
+    【왜 — 실측】
+    이전에는 관련도 순으로만 나열해서, 원문에서 이어지는 조각이 컨텍스트에
+    흩어져 들어갔다. 파일럿 295문항:
+
+        상위 20 안에 같은 문서 조각          평균 3.8개
+        그중 원문에서 인접한 쌍              평균 3.3쌍
+        인접 쌍이 컨텍스트에서도 나란히       11%
+        흩어짐                              89%
+
+        예) 원문 6·7·8·9번 조각  ->  컨텍스트 [4]·[2]·[1]·[3]
+
+    청킹은 문장·표를 중간에서 자르므로 한 조각에 답이 온전히 들어 있다는
+    보장이 없다. 순서가 깨져 있으면 이어 읽을 단서가 없다.
+
+    【선택은 관련도, 배치만 원문 순서】
+    어느 20개를 넣을지는 검색 순위가 정한다(변경 없음). 문서 묶음의 순서도
+    그 묶음의 최고 검색 순위를 따르므로 가장 관련 높은 문서가 여전히 앞에
+    온다. 묶음 **안에서만** 원문 순서를 지킨다.
+    """
+    if not docs:
+        return []
+    groups: dict[str, list[tuple[int, Document]]] = {}
+    for rank, d in enumerate(docs):
+        key = (d.metadata or {}).get("doc_id") or d.source or "?"
+        groups.setdefault(key, []).append((rank, d))
+    ordered = sorted(groups.items(), key=lambda kv: min(r for r, _ in kv[1]))
+    out: list[Document] = []
+    for _key, items in ordered:
+        items.sort(key=lambda t: _pos_key(t[1]))
+        out.extend(d for _r, d in items)
+    return out
+
+
 def _format_docs_for_context(docs: list[Document]) -> str:
+    """재배열된 문서를 컨텍스트로. 문서 묶음과 연속성을 표시한다."""
     if not docs:
         return ""
-    blocks = []
+    blocks: list[str] = []
+    prev_doc = None
+    prev_pos = None
     for i, d in enumerate(docs, start=1):
-        title = d.metadata.get("title", d.source)
-        loc = d.metadata.get("location", "")
-        blocks.append(f"[{i}] {title}{(' ' + loc) if loc else ''}\n{(d.content or '')[:1500]}")
+        m = d.metadata or {}
+        doc_id = m.get("doc_id") or d.source or ""
+        title = m.get("title", d.source)
+        loc = m.get("location", "")
+        pos = _pos_key(d)
+        head = ""
+        if doc_id != prev_doc:
+            head = f"── 문서: {doc_id} ──\n"
+            prev_pos = None
+        cont = "  (앞 조각에서 이어짐)" if (
+            prev_doc == doc_id and prev_pos and pos[0] - prev_pos[0] <= 1) else ""
+        blocks.append(
+            f"{head}[{i}] {title}{(' ' + loc) if loc else ''}{cont}\n{(d.content or '')[:1500]}"
+        )
+        prev_doc, prev_pos = doc_id, pos
     return "\n\n".join(blocks)
 
 
@@ -207,6 +282,9 @@ def generator_node(state: GraphState) -> dict:
 
     qtype = state.question_type or "reasoning"
     sys_prompt = _PROMPT_BY_TYPE.get(qtype, _PROMPT_BY_TYPE["reasoning"])
+    # 인용 [N] 은 docs 의 위치를 가리키므로, 재배열한 목록을 컨텍스트와 출처
+    # 양쪽에 그대로 써야 번호가 어긋나지 않는다.
+    docs = _reorder_for_context(docs)
     sys_content = f"{sys_prompt}\n\n【검색 결과】\n{_format_docs_for_context(docs)}"
 
     # 후속 질문이면 재구성된 질의로 답한다. messages 에는 원 발화를 남긴다.
