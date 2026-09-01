@@ -209,10 +209,12 @@ def generator_node(state: GraphState) -> dict:
     sys_prompt = _PROMPT_BY_TYPE.get(qtype, _PROMPT_BY_TYPE["reasoning"])
     sys_content = f"{sys_prompt}\n\n【검색 결과】\n{_format_docs_for_context(docs)}"
 
+    # 후속 질문이면 재구성된 질의로 답한다. messages 에는 원 발화를 남긴다.
+    ask = (state.resolved_query or "").strip() or user_input
     try:
         resp = get_llm().invoke([
             SystemMessage(content=sys_content),
-            HumanMessage(content=user_input),
+            HumanMessage(content=ask),
         ])
         answer = extract_text_content(resp.content)
     except Exception as e:

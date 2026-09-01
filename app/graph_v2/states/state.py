@@ -88,6 +88,17 @@ class GraphState(BaseModel):
     # ─── 입력 ───────────────────────────────────────────────
     input_data: str = ""
     original_input: str = ""        # rewrite 시에도 불변 (drift 방지 anchor, router에서 1회 초기화)
+
+    # 후속 질문을 이전 대화와 합쳐 **독립적으로 이해 가능하게** 다시 쓴 질의.
+    # 없으면(첫 질문이거나 재구성 불필요) 빈 문자열이고 downstream 은 input_data 를 쓴다.
+    #
+    # 【이 필드가 필요한 이유】
+    # messages 는 누적되지만 router/retrieve/generator 중 아무도 읽지 않았다.
+    # (security 노드만 인젝션 슬라이딩 윈도우로 사용) 그래서 v2 그래프는 사실상
+    # 단일 턴이었고, "그럼 5개월 과정은?" 같은 후속 질문이 전부 실패했다.
+    # 히스토리를 모든 노드에 뿌리는 대신 router 한 곳에서 질의를 재구성해
+    # 하류가 그것만 쓰게 한다. 손댈 곳이 적고 decision_path 로 추적된다.
+    resolved_query: str = ""
     input_embedding: Optional[list[float]] = None  # 한 번 계산 후 재사용
     trace_id: str = ""
 

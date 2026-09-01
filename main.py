@@ -278,6 +278,7 @@ def _build_chat_inputs(trace_id: str, user_input: str) -> dict:
         "verification":         None,
         "routing_decision":     "",
         "question_type":        "reasoning",
+        "resolved_query":       "",     # 매 턴 새로 계산 (이전 턴 값 이월 금지)
         "security_blocked":     False,
         "security_reason":      "",
         "sub_questions":        [],
@@ -475,6 +476,7 @@ async def chat_endpoint(request: Request):
         "verification":         None,
         "routing_decision":     "",
         "question_type":        "reasoning",
+        "resolved_query":       "",     # 매 턴 새로 계산 (이전 턴 값 이월 금지)
         "security_blocked":     False,
         "security_reason":      "",
         "sub_questions":        [],

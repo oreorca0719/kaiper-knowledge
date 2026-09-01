@@ -18,6 +18,7 @@ Phase A 학습 반영:
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Optional
 
@@ -56,7 +57,17 @@ _ROUTER_SYSTEM_PROMPT = """당신은 사내 AI 어시스턴트의 라우터입�
    - "reasoning": 종합·추론 (예: "왜", "어떤 의미", "이유")
    - "comparison": 비교 (예: "차이", "vs", "대비")
 
-3. sub_questions (multi_hop_retrieval일 때만, 최대 5개):
+3. resolved_query (후속 질문 재구성):
+   - [이전 대화] 가 주어졌고 현재 질문이 그것에 이어지는 것이면,
+     **이전 대화를 몰라도 이해할 수 있는 완전한 질문**으로 다시 쓴다.
+       이전: "S1형 커리큘럼의 12주차 산출물은?" -> "그럼 5개월 과정은?"
+       재구성: "5개월 과정의 12주차 산출물은 무엇인가요?"
+       이전: "GitLab Duo 가격은?" -> "더 자세히"
+       재구성: "GitLab Duo 가격 정책을 자세히 알려주세요"
+   - 현재 질문만으로 이미 완결되면 **빈 문자열**을 넣는다. 억지로 합치지 않는다.
+   - 이전 대화가 없으면 빈 문자열.
+
+4. sub_questions (multi_hop_retrieval일 때만, 최대 5개):
    - 원 질문을 더 작은 검색 가능 단위로 분해
 
 【중요】
@@ -68,18 +79,36 @@ JSON으로만 출력. 다른 텍스트 금지:
 {
   "routing_decision": "...",
   "question_type": "...",
+  "resolved_query": "",
   "sub_questions": [],
   "reason": "한 줄 이유"
 }
 """
 
 
-def _call_router_llm(user_input: str) -> dict:
+_HISTORY_TURNS = int(os.getenv("ROUTER_HISTORY_TURNS", "4"))   # 최근 N개 메시지
+
+
+def _recent_history(messages) -> str:
+    """최근 대화를 라우터 프롬프트용 문자열로. 길면 앞을 자른다."""
+    if not messages:
+        return ""
+    lines = []
+    for m in list(messages)[-_HISTORY_TURNS:]:
+        role = "사용자" if m.__class__.__name__ == "HumanMessage" else "어시스턴트"
+        text = extract_text_content(getattr(m, "content", "") or "").strip()
+        if text:
+            lines.append(f"{role}: {text[:300]}")
+    return "\n".join(lines)
+
+
+def _call_router_llm(user_input: str, history: str = "") -> dict:
     """LLM 호출 → structured JSON. 실패 시 default."""
     try:
+        content = (f"[이전 대화]\n{history}\n\n" if history else "") + f"사용자 질문: {user_input}"
         resp = get_llm().invoke([
             SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
-            HumanMessage(content=f"사용자 질문: {user_input}"),
+            HumanMessage(content=content),
         ])
         raw = extract_text_content(resp.content)
         # Fenced code block 제거
@@ -109,7 +138,8 @@ def router_node(state: GraphState) -> dict:
     if not (state.original_input or "").strip():
         original_init["original_input"] = user_input
 
-    parsed = _call_router_llm(user_input)
+    history = _recent_history(state.messages)
+    parsed = _call_router_llm(user_input, history)
     decision = (parsed.get("routing_decision") or "single_retrieval").strip()
     qtype = (parsed.get("question_type") or "reasoning").strip()
     subs = parsed.get("sub_questions") or []
@@ -197,12 +227,21 @@ def router_node(state: GraphState) -> dict:
     if qtype not in valid_qtypes:
         qtype = "reasoning"
 
+    # 재구성된 질의. 원 질문과 같거나 지나치게 길면 쓰지 않는다.
+    resolved = (parsed.get("resolved_query") or "").strip()
+    if resolved == user_input or len(resolved) > 300:
+        resolved = ""
+    label = f"router:{decision}/{qtype}"
+    if resolved:
+        label += "+resolved"
+
     return {
         "routing_decision": decision,
         "question_type": qtype,
+        "resolved_query": resolved,
         "sub_questions": subs,
         "llm_call_count": state.llm_call_count + 1,
-        "decision_path": [f"router:{decision}/{qtype}"],
+        "decision_path": [label],
         **original_init,
     }
 

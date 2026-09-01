@@ -146,7 +146,8 @@ def query_planner_node(state: GraphState) -> dict:
     - reasoning / comparison / list_n: 변형 2개 추가
     """
     qtype = state.question_type or "reasoning"
-    user_input = (state.input_data or "").strip()
+    # 후속 질문이면 router 가 재구성한 독립 질의를 쓴다.
+    user_input = (state.resolved_query or state.input_data or "").strip()
 
     if qtype not in _MULTI_QUERY_TYPES:
         # 단일 query (변형 없음)
@@ -200,7 +201,7 @@ def retrieve_node(state: GraphState) -> dict:
       3. boost_by_query_context: query qtype 일치 chunks score boost
          (doc_topic boost는 router가 query_doc_topic 분류 시 활성화)
     """
-    queries = state.sub_questions or [state.input_data]
+    queries = state.sub_questions or [state.resolved_query or state.input_data]
     queries = [q for q in queries if q]
 
     retriever = _get_registry().get("chroma_hybrid")
