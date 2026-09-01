@@ -12,7 +12,9 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from app.knowledge.chunking.page_unit import PageUnit
-from app.knowledge.chunking.extractors.vlm_page import should_try_vlm, transcribe_page
+from app.knowledge.chunking.extractors.vlm_page import (
+    should_try_vlm, transcribe_page, _broken_glyph_count,
+)
 
 
 # 페이지 번호·머리말만 있는 줄 (제목으로 쓰면 안 됨)
@@ -117,7 +119,16 @@ def extract_pdf(path: Path) -> list[PageUnit]:
         if should_try_vlm(text, page):
             vlm_text = transcribe_page(path, page_idx - 1, existing_text=text)
         if vlm_text:
-            text = "\n\n".join(p for p in (text, vlm_text) if p).strip()
+            # 【덧붙일 것인가 교체할 것인가】
+            # 폰트 매핑이 깨진 원문(㎼ 㚅 (cid:...))은 그대로 두면 검색·생성 양쪽에
+            # 잡음이 된다. 전사본에 깨진 글자가 없으면 원문을 **교체**한다.
+            # 그 외에는 덧붙인다 — 전사가 놓친 내용이 원문에 남아 있을 수 있다.
+            if _broken_glyph_count(text) > 0 and _broken_glyph_count(vlm_text) == 0:
+                print(f"[PDF] p{page_idx}: 글리프 손상 원문을 전사본으로 교체 "
+                      f"({len(text)}자 -> {len(vlm_text)}자)")
+                text = vlm_text
+            else:
+                text = "\n\n".join(p for p in (text, vlm_text) if p).strip()
 
         if not text:
             continue
