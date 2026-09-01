@@ -142,10 +142,24 @@ EMBED_MAX_RETRY   = int(os.getenv("EMBED_MAX_RETRY", "5"))
 EMBED_BASE_DELAY  = float(os.getenv("EMBED_BASE_DELAY", "6"))   # 6,12,24,48,96초
 
 
-def _is_rate_limit(e: Exception) -> bool:
+def _is_retryable(e: Exception) -> bool:
+    """재시도할 가치가 있는 일시적 오류인가.
+
+    할당량 초과(429)뿐 아니라 서비스 일시 장애(503/500)도 포함한다.
+    실측: 재인제스트 중 503 UNAVAILABLE 이 섞여 나왔는데 재시도 대상이
+    아니어서 그 문서가 그대로 유실됐다.
+    설정 오류(400)나 인증 실패는 재시도해도 소용없으므로 제외한다.
+    """
     t = str(e)
+    low = t.lower()
     return ("RESOURCE_EXHAUSTED" in t or "429" in t
-            or "quota" in t.lower() or "rate limit" in t.lower())
+            or "quota" in low or "rate limit" in low
+            or "UNAVAILABLE" in t or "503" in t or "500" in t
+            or "INTERNAL" in t or "deadline" in low or "timeout" in low)
+
+
+# 하위 호환 별칭
+_is_rate_limit = _is_retryable
 
 
 def _with_retry(fn, what: str):
@@ -157,10 +171,10 @@ def _with_retry(fn, what: str):
             return fn()
         except Exception as e:              # noqa: BLE001
             last = e
-            if not _is_rate_limit(e) or i == EMBED_MAX_RETRY - 1:
+            if not _is_retryable(e) or i == EMBED_MAX_RETRY - 1:
                 raise
             wait = EMBED_BASE_DELAY * (2 ** i)
-            print(f"[EMBED] 할당량 초과 — {wait:.0f}초 후 재시도 ({i+1}/{EMBED_MAX_RETRY}) [{what}]",
+            print(f"[EMBED] 일시 오류 — {wait:.0f}초 후 재시도 ({i+1}/{EMBED_MAX_RETRY}) [{what}]",
                   flush=True)
             _t.sleep(wait)
     raise last

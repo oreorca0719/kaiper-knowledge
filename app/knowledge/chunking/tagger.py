@@ -102,11 +102,16 @@ def tag_chunks(
         entities = extract_entities(u.text)
 
         chunk_id = f"file::{doc_id}::page_{u.unit_index}"
+        # split_part 는 표든 본문이든 붙여야 한다.
+        # 큰 표를 행 경계로 나누면서 조각이 여럿 생기는데, 이전에는 표일 때
+        # part 를 붙이지 않아 모든 조각이 같은 ID 가 됐다:
+        #   Expected IDs to be unique, found duplicates of: ...::page_1::table_1
+        sp = str(u.raw_metadata.get("split_part") or "").replace("/", "of")
         if u.is_table:
             chunk_id = f"file::{doc_id}::page_{u.parent_page_index or u.unit_index}::table_{u.table_index}"
-        elif u.raw_metadata.get("split_part"):
-            # 큰 unit 분할된 경우 part로 disambiguate
-            sp = str(u.raw_metadata["split_part"]).replace("/", "of")
+            if sp:
+                chunk_id += f"::part_{sp}"
+        elif sp:
             chunk_id = f"file::{doc_id}::page_{u.unit_index}::part_{sp}"
 
         metadata = {
