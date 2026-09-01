@@ -127,16 +127,57 @@ def get_llm(model_name: str | None = None) -> BaseChatModel:
 # Embedding
 # ──────────────────────────────────────────────
 
+# 임베딩 재시도 설정.
+#
+# 【필요한 이유 — 실측】
+# 파일럿 인제스트에서 131개 중 74개를 처리하던 중 34개가 실패했다(46%).
+#     Error embedding content (RESOURCE_EXHAUSTED): 429
+#     Quota exceeded for gemini-embedding ... per_minute_per_base_model
+# 분당 할당량이라 잠시 기다리면 풀리는데, 재시도가 없어서 그대로 유실됐다.
+# 같은 원인으로 질의 경로에서도 503(보안 검사 모듈 사용 불가)이 간헐 발생했다.
+#
+# 분당 제한이므로 지수 백오프가 유효하다. 마지막 대기가 60초를 넘도록 잡아
+# 다음 분 창(window)까지 넘어가게 한다.
+EMBED_MAX_RETRY   = int(os.getenv("EMBED_MAX_RETRY", "5"))
+EMBED_BASE_DELAY  = float(os.getenv("EMBED_BASE_DELAY", "6"))   # 6,12,24,48,96초
+
+
+def _is_rate_limit(e: Exception) -> bool:
+    t = str(e)
+    return ("RESOURCE_EXHAUSTED" in t or "429" in t
+            or "quota" in t.lower() or "rate limit" in t.lower())
+
+
+def _with_retry(fn, what: str):
+    """분당 할당량 초과 시 백오프 후 재시도. 그 외 오류는 즉시 올린다."""
+    import time as _t
+    last = None
+    for i in range(EMBED_MAX_RETRY):
+        try:
+            return fn()
+        except Exception as e:              # noqa: BLE001
+            last = e
+            if not _is_rate_limit(e) or i == EMBED_MAX_RETRY - 1:
+                raise
+            wait = EMBED_BASE_DELAY * (2 ** i)
+            print(f"[EMBED] 할당량 초과 — {wait:.0f}초 후 재시도 ({i+1}/{EMBED_MAX_RETRY}) [{what}]",
+                  flush=True)
+            _t.sleep(wait)
+    raise last
+
+
 class GeminiRAGEmbeddings(GoogleGenerativeAIEmbeddings):
-    """LangChain Google GenAI 임베딩 래퍼 (RAG용 task_type 분기)."""
+    """LangChain Google GenAI 임베딩 래퍼 (RAG용 task_type 분기 + 재시도)."""
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         self.task_type = "retrieval_document"
-        return super().embed_documents(texts)
+        return _with_retry(lambda: super(GeminiRAGEmbeddings, self).embed_documents(texts),
+                           f"docs x{len(texts)}")
 
     def embed_query(self, text: str) -> list[float]:
         self.task_type = "retrieval_query"
-        return super().embed_query(text)
+        return _with_retry(lambda: super(GeminiRAGEmbeddings, self).embed_query(text),
+                           "query")
 
 
 def get_embeddings() -> GeminiRAGEmbeddings:

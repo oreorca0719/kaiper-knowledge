@@ -223,6 +223,7 @@ def auto_ingest_if_enabled() -> None:
         current_files[rel] = p
 
     added = skipped = updated = deleted = 0
+    failed: list[str] = []
 
     # 삭제된 파일 청크 제거
     for rel in list(state.keys()):
@@ -299,9 +300,22 @@ def auto_ingest_if_enabled() -> None:
                 added += 1
         except Exception as e:
             print(f"[INGEST] Chroma 적재 실패 {rel}: {e}")
+            failed.append(rel)
 
     _save_state(knowledge_dir, state)
     print(f"[INGEST] 완료 - 신규:{added} 갱신:{updated} 스킵:{skipped} 삭제:{deleted}")
+
+    # 실패를 조용히 넘기지 않는다.
+    # 실측: 파일럿에서 131개 중 34개가 임베딩 할당량 초과로 유실됐는데
+    # 로그를 일일이 세기 전까지 아무도 몰랐다. 색인이 끝난 것처럼 보이지만
+    # 실제로는 46%가 빠져 있었다.
+    # 실패한 파일은 state 에 기록되지 않으므로 재실행하면 다시 시도한다.
+    if failed:
+        print(f"[INGEST] ★ 적재 실패 {len(failed)}건 — 재실행하면 다시 시도합니다")
+        for r in failed[:20]:
+            print(f"[INGEST]   실패: {r}")
+        if len(failed) > 20:
+            print(f"[INGEST]   … 외 {len(failed)-20}건")
 
     if added + updated + deleted > 0:
         try:
