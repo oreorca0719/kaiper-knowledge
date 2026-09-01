@@ -160,71 +160,6 @@ def _format_docs_for_context(docs: list[Document]) -> str:
     return "\n\n".join(blocks)
 
 
-# ── 과잉 거부 보정 ────────────────────────────────────────
-#
-# 【현상】 문서를 충분히 확보하고도 "찾을 수 없습니다" 로 끝내는 경우가 있다.
-#   실측 (질의 3회 반복, 모두 거부):
-#     Q "GitLab Duo Agent Platform은 어떤 팀들을 통합하나요?"
-#       retrieve:3q->20docs
-#       grade:pass(20rel/20kept/20total, max=0.95, cov=full)   <- 검색은 완벽
-#       generate:list_n(0cit)                                  <- 그런데 거부
-#       reflect:fail(miscalim=True)                            <- reflection 은 감지함
-#     같은 내용을 길게 물으면("...통합하는 하나의 워크플로우를 제공하나요?") 정답.
-#
-# 【원인】 답변 규칙 4번("검색 결과에 답이 없으면 찾을 수 없다고 하라. 비슷하지만
-#   다른 대상의 chunk 로 대신 답하지 말라")이 짧고 모호한 질문에서 과하게 작동한다.
-#   질문이 짧으면 모델이 "이 chunk 가 정확히 그것인가"를 확신하지 못하고 거부한다.
-#
-# 【규칙을 풀지 않는 이유】 이 규칙은 '오선택'(비슷한 다른 표의 행을 답하는 실패)을
-#   막고 있고 실제로 작동한다 — 날조 0%, 오답 1.3%. 규칙을 풀면 거부는 줄지만
-#   오답·날조가 늘어난다. 트레이드오프를 맞바꾸는 것일 뿐 개선이 아니다.
-#
-# 【대신 하는 것】 거부의 **형태**만 바꾼다. 사실을 단정하지 않으므로 날조 위험을
-#   다시 들이지 않으면서, 막다른 길을 출발점으로 만든다. 사용자는 관련 문서를
-#   직접 열어보거나 다른 표현으로 재질의할 수 있다 (긴 질문은 정답이었다).
-#
-# 프롬프트가 아니라 후처리인 이유: 모델에게 판단을 더 시키는 변경은 이 프로젝트에서
-# 한 번 실패했다(표 레이블 규칙 - 얻은 것 없이 정확도만 하락). 출력 형식만 바꾸는
-# 결정적 후처리가 훨씬 안전하다.
-
-_REFUSAL_MARKERS = (
-    "찾을 수 없", "확인되지 않", "확인할 수 없", "포함되어 있지 않",
-    "정보가 없", "제공되지 않", "명시되어 있지 않",
-)
-
-
-def _is_refusal(text: str) -> bool:
-    """답변이 실질적으로 '모른다' 인가. 부연이 길면 이미 정보를 준 것이므로 제외."""
-    t = (text or "").strip()
-    if not t or len(t) > 400:
-        return False
-    return any(m in t for m in _REFUSAL_MARKERS)
-
-
-def _augment_refusal(answer: str, docs: list[Document], top: int = 3) -> str:
-    """거부 답변에 관련 자료 목록과 재질의 안내를 붙인다.
-
-    [N] 번호는 generator 가 컨텍스트에 넣은 순서와 같으므로, 붙이는 순간
-    _extract_cited_ids 가 인식해 출처가 자동으로 응답에 포함된다.
-    """
-    lines = []
-    for i, d in enumerate(docs[:top], start=1):
-        title = (d.metadata.get("title") or d.source or "").strip()
-        loc = (d.metadata.get("location") or "").strip()
-        if not title:
-            continue
-        lines.append(f"- {title}{(' ' + loc) if loc else ''} [{i}]")
-    if not lines:
-        return answer
-
-    return (
-        "질문하신 내용에 대한 직접적인 답은 검색 결과에서 확인되지 않았습니다.\n\n"
-        "관련이 있어 보이는 자료는 다음과 같습니다:\n"
-        + "\n".join(lines)
-        + "\n\n좀 더 구체적인 표현으로 다시 질문해 주시면 더 정확히 찾아드릴 수 있습니다."
-    )
-
-
 def _extract_cited_ids(text: str) -> set[int]:
     return {int(x) for x in re.findall(r"\[(\d{1,3})\]", text or "")}
 
@@ -290,15 +225,6 @@ def generator_node(state: GraphState) -> dict:
     # URL-encoded segment 디코딩 (가독성)
     answer = _decode_urls_in_answer(answer)
 
-    # 과잉 거부 보정 — 문서가 있는데 거부했고 인용도 없으면 관련 자료를 안내한다.
-    # (문서가 아예 없는 경우는 위쪽 no_docs 분기에서 이미 처리됨)
-    refusal_augmented = False
-    if docs and _is_refusal(answer) and not _extract_cited_ids(answer):
-        augmented = _augment_refusal(answer, docs)
-        if augmented != answer:
-            answer = augmented
-            refusal_augmented = True
-
     cited_ids = _extract_cited_ids(answer)
     citations = _build_citations(docs, cited_ids)
 
@@ -307,8 +233,5 @@ def generator_node(state: GraphState) -> dict:
         "citations": citations,
         "messages": [HumanMessage(content=user_input), AIMessage(content=answer)],
         "llm_call_count": state.llm_call_count + 1,
-        "decision_path": [
-            f"generate:{qtype}({len(citations)}cit)"
-            + ("+refusal_augmented" if refusal_augmented else "")
-        ],
+        "decision_path": [f"generate:{qtype}({len(citations)}cit)"],
     }
