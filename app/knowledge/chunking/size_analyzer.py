@@ -29,7 +29,10 @@ SIZE_THRESHOLDS: dict[str, dict[str, int]] = {
     "docx": {"merge_below": 300, "split_above": 1500},
     "txt":  {"merge_below": 200, "split_above": 1200},
     "md":   {"merge_below": 200, "split_above": 1200},
-    "xlsx": {"merge_below": 0,   "split_above": 2000},
+    # xlsx 는 2000 이었다. generator 가 컨텍스트를 [:1500] 로 자르므로
+    # 1500~2000 구간 chunk 는 뒷부분이 조용히 버려진다. 다른 형식은 모두
+    # 1500 이하로 맞춰져 있었는데 xlsx 만 어긋나 있었다.
+    "xlsx": {"merge_below": 0,   "split_above": 1500},
 }
 
 
@@ -210,7 +213,32 @@ def adaptive_chunk(units: list[PageUnit], format: str) -> list[PageUnit]:
         # 표는 무조건 그대로 (분할·합침 금지)
         if unit.is_table:
             _flush_pending()
-            out.append(unit)
+            # 【표라고 무조건 통째로 두면 안 된다 — 실측】
+            # XLSX 는 시트 하나를 is_table=True 로 만든다. 그런데 이 분기가
+            # split_above 보다 먼저 걸려서 아무리 큰 시트도 한 chunk 가 됐다.
+            # 파일럿 실측:
+            #     24,944자 chunk 존재 — generator 는 [:1500] 로 자르므로 94% 손실
+            #      5,216자 교육_커리큘럼_v0.91  → 71% 손실
+            #
+            # 표를 함부로 조각내지 않겠다는 의도는 유지하되, 컨텍스트 한도를
+            # 넘는 것은 **행 경계에서** 자른다. _split_markdown_table 이
+            # 헤더 행을 각 조각에 반복해 넣으므로 조각마다 독립 해석이 된다.
+            if unit.char_count > split_above:
+                parts = _split_text(unit.text, max_size=split_above)
+                for i, t in enumerate(parts):
+                    out.append(PageUnit(
+                        unit_index=unit.unit_index,
+                        unit_type=unit.unit_type,
+                        title=unit.title + (f" (part {i+1}/{len(parts)})" if len(parts) > 1 else ""),
+                        section_path=unit.section_path,
+                        text=t,
+                        is_table=True,
+                        table_index=getattr(unit, "table_index", None),
+                        parent_page_index=getattr(unit, "parent_page_index", None),
+                        raw_metadata={**unit.raw_metadata, "split_part": f"{i+1}/{len(parts)}"},
+                    ))
+            else:
+                out.append(unit)
             continue
 
         size = unit.char_count
@@ -243,8 +271,35 @@ def adaptive_chunk(units: list[PageUnit], format: str) -> list[PageUnit]:
                 _flush_pending()
             continue
 
-        # Case 3: 적정 → pending flush 후 그대로
-        _flush_pending()
+        # Case 3: 적정 크기
+        # 【짧은 조각을 혼자 내보내지 않는다 — 실측】
+        # 기존에는 여기서 무조건 _flush_pending() 을 불렀다. 그래서 짧은 조각이
+        # **연속으로 이어질 때만** 합쳐지고, 보통 크기 사이에 낀 조각 하나는
+        # 그대로 배출됐다. 파일럿 2,314 chunk 중 276개(12%)가 100자 미만이었고
+        # 내용이 이랬다:
+        #     "운영 리소스 | 도구 및 라이선스\n\n비용 확인 필요 항목"   (33자)
+        #     "→ 이 4가지 조건을 충족시키는 방향으로 주제 배치·실습 설계"   (42자)
+        # 이런 조각은 맥락이 없어 임베딩이 모호해지고 검색 후보만 잠식한다.
+        #
+        # 합쳐도 split_above 를 넘지 않으면 다음 unit 에 흡수시킨다.
+        if pending:
+            merged = "\n\n".join([u.text for u in pending if u.text] + [unit.text or ""])
+            if len(merged) <= split_above:
+                titles = [u.title for u in pending if u.title]
+                unit = PageUnit(
+                    unit_index=pending[0].unit_index,
+                    unit_type=unit.unit_type,
+                    title=unit.title or (titles[0] if titles else ""),
+                    section_path=unit.section_path,
+                    text=merged,
+                    is_table=False,
+                    raw_metadata={**unit.raw_metadata,
+                                  "absorbed_units": [u.unit_index for u in pending]},
+                )
+                pending = []
+                pending_size = 0
+            else:
+                _flush_pending()
         out.append(unit)
 
     _flush_pending()  # 남은 pending
